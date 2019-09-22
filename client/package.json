@@ -10,7 +10,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "mathjs": "^6.2.1",
-    "three.js": "^0.77.1"
+    "three": "^0.108.0"
   }
 }
