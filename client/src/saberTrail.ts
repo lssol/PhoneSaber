@@ -15,11 +15,11 @@ export type SaberTrail = {
   update: (nowMs: number) => void;
 };
 
-const MAX_SAMPLES = 32;
-const TRAIL_FADE_MS = 210;
+const MAX_SAMPLES = 16;
+const TRAIL_FADE_MS = 150;
 const MIN_TRANSLATION_DELTA_M = 0.0015;
 const MIN_ROTATION_DELTA_RAD = 0.0015;
-const START_OPACITY = 0.25;
+const START_OPACITY = 0.12;
 const TRAIL_COLOR = 0x36a3ff;
 
 export function createSaberTrail(
@@ -110,6 +110,7 @@ function createRibbonSegment(): { mesh: THREE.Mesh; geometry: THREE.BufferGeomet
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.visible = false;
+  mesh.castShadow = false;
   mesh.frustumCulled = false;
   mesh.renderOrder = 1;
 

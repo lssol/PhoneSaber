@@ -211,7 +211,6 @@ export class Fusion {
     const sceneX = -local.x * POS_GAIN;
     const sceneY = -local.y * POS_GAIN;
     const sceneZ = -(-local.z - this.calibration.restZ) * POS_GAIN;
-
     const [tx, ty, tz] = this.posFilter.filter(sceneX, sceneY, sceneZ, body.timeSec);
 
     this.lastVisionTime = body.timeSec;

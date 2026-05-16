@@ -9,7 +9,7 @@ export function createSaberModel(source: THREE.Object3D): THREE.Object3D {
 
   root.traverse((child) => {
     if (!(child instanceof THREE.Mesh)) return;
-    child.castShadow = true;
+    child.castShadow = false;
     child.receiveShadow = true;
     child.frustumCulled = false;
 

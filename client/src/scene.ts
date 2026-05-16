@@ -39,8 +39,8 @@ export function createScene(container: HTMLElement = document.body): Scene {
   const width = bounds.width || window.innerWidth;
   const height = bounds.height || window.innerHeight;
   const camera = new THREE.PerspectiveCamera(55, width / height, 0.01, 100);
-  camera.position.set(0, 0.3, 3.2);
-  camera.lookAt(0, 0.6, 0);
+  camera.position.set(0, 1.45, 3.2);
+  camera.lookAt(0, 1.75, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(width, height);

@@ -60,7 +60,6 @@ export function PhoneSaberApp({ fusion, imuQuat, frameStats }: PhoneSaberAppProp
 function CinematicScene({ fusion, imuQuat, frameStats }: PhoneSaberAppProps) {
   return (
     <Canvas
-      shadows
       dpr={[1, 2]}
       gl={{
         antialias: true,
@@ -76,7 +75,7 @@ function CinematicScene({ fusion, imuQuat, frameStats }: PhoneSaberAppProps) {
       <CameraRig />
       <Room />
       <Lights />
-      <ControlledSaber fusion={fusion} imuQuat={imuQuat} />
+      <ControlledSaber fusion={fusion} imuQuat={imuQuat} position={[0, 1.15, 0]} />
       <EffectComposer multisampling={0}>
         <Bloom
           mipmapBlur
@@ -98,6 +97,11 @@ function DebugScene({ fusion, imuQuat, frameStats }: PhoneSaberAppProps) {
     if (!hostRef.current) return;
 
     const debug = createScene(hostRef.current);
+    const offset = new THREE.Group();
+    offset.position.set(0, 1.15, 0);
+    debug.scene.add(offset);
+    offset.add(debug.saber);
+
     let raf = 0;
     const animate = (now: number) => {
       raf = requestAnimationFrame(animate);
@@ -127,7 +131,15 @@ function SceneClock({ frameStats }: { frameStats: FrameStats }) {
   return null;
 }
 
-function ControlledSaber({ fusion, imuQuat }: { fusion: Fusion; imuQuat: THREE.Quaternion }) {
+function ControlledSaber({
+  fusion,
+  imuQuat,
+  position = [0, 0, 0],
+}: {
+  fusion: Fusion;
+  imuQuat: THREE.Quaternion;
+  position?: [number, number, number];
+}) {
   const groupRef = useRef<THREE.Group>(null);
   const trailRef = useRef<SaberTrail | null>(null);
   const { scene } = useThree();
@@ -148,10 +160,14 @@ function ControlledSaber({ fusion, imuQuat }: { fusion: Fusion; imuQuat: THREE.Q
   });
 
   return (
-    <group ref={groupRef}>
-      <SaberAsset onReady={(mesh) => {
-        trailRef.current = createSaberTrail(scene, mesh, isBladeMaterial);
-      }} />
+    <group position={position}>
+      <group ref={groupRef}>
+        <SaberAsset
+          onReady={(mesh) => {
+            trailRef.current = createSaberTrail(scene, mesh, isBladeMaterial);
+          }}
+        />
+      </group>
     </group>
   );
 }
@@ -172,9 +188,9 @@ function CameraRig() {
 
   useFrame(({ clock }) => {
     const t = clock.elapsedTime;
-    cameraTarget.set(Math.sin(t * 0.18) * 0.12, 1.02 + Math.sin(t * 0.29) * 0.025, 3.75);
+    cameraTarget.set(Math.sin(t * 0.18) * 0.12, 1.35 + Math.sin(t * 0.29) * 0.025, 3.75);
     camera.position.lerp(cameraTarget, 0.035);
-    cameraLookAt.set(0, 0.58, -0.15);
+    cameraLookAt.set(0, 1.1, -0.15);
     camera.lookAt(cameraLookAt);
   });
 
@@ -188,20 +204,20 @@ function Room() {
         <planeGeometry args={[5.8, 6.8]} />
         <meshStandardMaterial color="#34373a" roughness={0.82} metalness={0.08} />
       </mesh>
-      <mesh receiveShadow position={[0, 2.55, -0.55]} rotation={[Math.PI / 2, 0, 0]}>
+      <mesh receiveShadow position={[0, 8.0, -0.55]} rotation={[Math.PI / 2, 0, 0]}>
         <planeGeometry args={[5.8, 6.8]} />
         <meshStandardMaterial color="#171b20" roughness={0.9} metalness={0.02} />
       </mesh>
-      <mesh receiveShadow position={[0, 1.25, -3.95]}>
-        <planeGeometry args={[5.8, 2.6]} />
+      <mesh receiveShadow position={[0, 4.0, -3.95]}>
+        <planeGeometry args={[5.8, 8.0]} />
         <meshStandardMaterial color="#24282d" roughness={0.86} metalness={0.04} />
       </mesh>
-      <mesh receiveShadow position={[-2.9, 1.25, -0.55]} rotation={[0, Math.PI / 2, 0]}>
-        <planeGeometry args={[6.8, 2.6]} />
+      <mesh receiveShadow position={[-2.9, 4.0, -0.55]} rotation={[0, Math.PI / 2, 0]}>
+        <planeGeometry args={[6.8, 8.0]} />
         <meshStandardMaterial color="#20242a" roughness={0.88} metalness={0.04} />
       </mesh>
-      <mesh receiveShadow position={[2.9, 1.25, -0.55]} rotation={[0, -Math.PI / 2, 0]}>
-        <planeGeometry args={[6.8, 2.6]} />
+      <mesh receiveShadow position={[2.9, 4.0, -0.55]} rotation={[0, -Math.PI / 2, 0]}>
+        <planeGeometry args={[6.8, 8.0]} />
         <meshStandardMaterial color="#1d2228" roughness={0.88} metalness={0.04} />
       </mesh>
       <mesh receiveShadow position={[0, 0.012, -2.0]} rotation={[-Math.PI / 2, 0, 0]}>
@@ -212,7 +228,6 @@ function Room() {
         <circleGeometry args={[0.92, 96]} />
         <meshStandardMaterial color="#262a2f" roughness={0.74} metalness={0.16} />
       </mesh>
-      <ContactShadows position={[0, 0.01, -0.35]} opacity={0.45} scale={4.4} blur={2.8} far={3.5} color="#05070a" />
     </group>
   );
 }
@@ -223,20 +238,16 @@ function Lights() {
       <Environment preset="warehouse" environmentIntensity={0.35} />
       <hemisphereLight args={['#9dbce8', '#101214', 0.55]} />
       <directionalLight
-        castShadow
-        position={[-2.1, 3.2, 2.0]}
+        position={[-2.1, 7.0, 2.0]}
         intensity={2.0}
         color="#d8ecff"
-        shadow-mapSize={[2048, 2048]}
-        shadow-bias={-0.00008}
       />
       <spotLight
-        castShadow
-        position={[1.8, 2.4, 1.6]}
+        position={[1.8, 6.0, 1.6]}
         angle={0.5}
         penumbra={0.7}
-        intensity={38}
-        distance={6}
+        intensity={80}
+        distance={15}
         color="#9ed0ff"
       />
       <pointLight position={[-1.7, 0.85, -1.7]} intensity={8} distance={4.5} color="#4f8cff" />
