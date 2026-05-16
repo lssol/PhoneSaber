@@ -14,6 +14,12 @@
     },
     "android": {
       "package": "dev.phonesaber.app"
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "2248ae63-e3c3-493d-a763-6b8521ba3ebe"
+      }
+    },
+    "owner": "sbrisset"
   }
 }
