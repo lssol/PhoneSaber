@@ -1,17 +1,28 @@
 // Fusion: phone IMU orientation + webcam-tracked body landmarks → saber pose.
 //
-// Per the design discussion:
-//   - Orientation: IMU quaternion, rebased to whatever the user was holding at
-//     calibration time (`q_display = q_calib⁻¹ · q_imu`). Identity at neutral.
-//   - Position: midpoint of the two wrists from MediaPipe (the two-handed grip
-//     means both wrists co-locate the phone). Expressed in shoulder-centred
-//     coordinates, smoothed with One-Euro, clamped to a reach sphere.
+// Orientation: single-pose calibration only captures `imuNeutral⁻¹ · imuCurrent`,
+// which removes a resting-pose offset but doesn't anchor the IMU's world frame
+// (gravity-aligned with an arbitrary yaw reference) to the scene frame.
+// We need *two* known poses to recover the alignment.
 //
-// Coordinate frames:
-//   - MediaPipe world:  +X subject-left, +Y down, +Z away-from-camera.
-//   - three.js scene:   +X right, +Y up, +Z toward camera.
-//   - We also mirror the X axis so movement matches the mirrored video preview
-//     (phone-to-user's-right => saber-to-screen-right).
+// Guided two-pose calibration:
+//   Pose A — user holds saber pointing UP    → blade should appear along +Y_scene.
+//   Pose B — user holds saber toward SCREEN  → blade should appear along +Z_scene.
+//
+// Both Android `TYPE_GAME_ROTATION_VECTOR` and iOS `.xArbitraryCorrectedZVertical`
+// put the phone's +Y axis from the bottom of the device to the top, so we treat
+// the phone-frame "blade axis" as +Y_phone. From the two IMU samples we get two
+// world-frame vectors; a small Procrustes-style alignment yields the rotation R
+// that maps IMU-world → scene. Per frame we then render
+//     saber.quaternion = R · q_imu_current
+// (Scene's saber mesh is pre-rotated so its local +Y is the blade direction,
+//  see scene.ts.)
+//
+// Position: midpoint of the visible wrists in shoulder-centred coordinates,
+// reach-clamped, One-Euro smoothed. Map MediaPipe (+X subject-left, +Y down,
+// +Z away-from-camera) to three.js (+X right, +Y up, +Z toward camera) by
+// negating all three axes (the X negation also mirrors movement to match the
+// horizontally-flipped video preview).
 
 import * as THREE from 'three';
 import type { BodyFrame, Vec3 } from './vision';
@@ -20,61 +31,71 @@ import { OneEuroVec3 } from './filter';
 const POS_MIN_CUTOFF = 1.0;
 const POS_BETA = 0.02;
 
+// Phone-frame blade axis. (Top of phone, where the blade "emerges" from the
+// hilt-shaped phone.) Both Android and iOS use the same convention here.
+const PROBE_BLADE_PHONE = new THREE.Vector3(0, 1, 0);
+
+// Scene-frame targets for the two calibration poses.
+const SCENE_UP = new THREE.Vector3(0, 1, 0);
+const SCENE_TOWARD_CAMERA = new THREE.Vector3(0, 0, 1);
+
+export type CalibrationStage = 'idle' | 'awaiting-up' | 'awaiting-forward' | 'ready';
+
 export type Calibration = {
-  // Neutral IMU pose. Saber rotation is q_calib⁻¹ · q_imu.
-  imuNeutral: THREE.Quaternion;
-  // Arm reach measured at neutral (shoulder→wrist distance, max of the two).
-  // Used to clamp the saber inside a feasible envelope.
+  // Rotation that takes IMU-world frame vectors into scene frame.
+  alignment: THREE.Quaternion;
+  // Arm reach measured at calibration time (shoulder→wrist). Used for clamping.
   armLength: number;
 };
 
 export function defaultCalibration(): Calibration {
-  return { imuNeutral: new THREE.Quaternion(0, 0, 0, 1), armLength: 0.65 };
-}
-
-// Snapshot IMU + body landmarks → new calibration baseline.
-export function calibrate(
-  imuQuat: THREE.Quaternion,
-  body: BodyFrame | null,
-): Calibration {
-  const imuNeutral = imuQuat.clone();
-  let armLength = 0.65;
-  if (body) {
-    const dL = distance(body.leftShoulder, body.leftWrist);
-    const dR = distance(body.rightShoulder, body.rightWrist);
-    // Take the max — it's the closest to a fully-extended-arm reach,
-    // and at neutral both arms should be similarly extended anyway.
-    armLength = Math.max(dL, dR, 0.4);
-  }
-  return { imuNeutral, armLength };
+  return { alignment: new THREE.Quaternion(), armLength: 0.65 };
 }
 
 export class Fusion {
-  private readonly posFilter = new OneEuroVec3(POS_MIN_CUTOFF, POS_BETA);
-  // The current saber pose in scene space.
   readonly position = new THREE.Vector3();
   readonly orientation = new THREE.Quaternion();
-  // Scratch.
-  private readonly inverseImuNeutral = new THREE.Quaternion();
+  stage: CalibrationStage = 'idle';
+
+  private readonly posFilter = new OneEuroVec3(POS_MIN_CUTOFF, POS_BETA);
+  private imuPoseA: THREE.Quaternion | null = null;
+  private armLengthAtCapture = 0.65;
 
   constructor(public calibration: Calibration = defaultCalibration()) {}
 
-  setCalibration(cal: Calibration) {
-    this.calibration = cal;
+  // Cycle through the calibration state machine. Each call captures the
+  // current IMU pose for whichever step we're on. After the second pose,
+  // stage becomes 'ready' and the alignment is committed.
+  capturePose(imu: THREE.Quaternion, body: BodyFrame | null): CalibrationStage {
+    if (this.stage !== 'awaiting-forward') {
+      // 'idle' / 'ready' / 'awaiting-up' all (re)start with pose A.
+      this.imuPoseA = imu.clone();
+      if (body) this.armLengthAtCapture = measureArm(body);
+      this.stage = 'awaiting-forward';
+      return this.stage;
+    }
+
+    // Pose B → solve alignment.
+    const imuPoseB = imu.clone();
+    const alignment = solveAlignment(this.imuPoseA!, imuPoseB);
+    this.calibration = { alignment, armLength: this.armLengthAtCapture };
     this.posFilter.reset();
+    this.stage = 'ready';
+    return this.stage;
   }
 
-  updateOrientation(imuQuat: THREE.Quaternion) {
-    this.inverseImuNeutral.copy(this.calibration.imuNeutral).invert();
-    this.orientation.copy(this.inverseImuNeutral).multiply(imuQuat);
+  resetCalibration() {
+    this.imuPoseA = null;
+    this.stage = 'idle';
+  }
+
+  updateOrientation(imu: THREE.Quaternion) {
+    this.orientation.multiplyQuaternions(this.calibration.alignment, imu);
   }
 
   updatePosition(body: BodyFrame) {
-    // Shoulder midpoint = body-anchored origin.
     const shoulderMid = midpoint(body.leftShoulder, body.rightShoulder);
 
-    // Pick whichever wrist(s) are visible. If only one, use it directly;
-    // if both, take the midpoint (two-handed grip => phone is between them).
     let gripWorld: Vec3;
     if (body.leftWristVisible && body.rightWristVisible) {
       gripWorld = midpoint(body.leftWrist, body.rightWrist);
@@ -83,18 +104,15 @@ export class Fusion {
     } else if (body.rightWristVisible) {
       gripWorld = body.rightWrist;
     } else {
-      // No reliable observation this frame: keep previous position.
       return;
     }
 
-    // Move to shoulder-centred frame.
     const local: Vec3 = {
       x: gripWorld.x - shoulderMid.x,
       y: gripWorld.y - shoulderMid.y,
       z: gripWorld.z - shoulderMid.z,
     };
 
-    // Reach clamp: phone shouldn't be further from shoulders than an arm.
     const reach = this.calibration.armLength;
     const d = Math.hypot(local.x, local.y, local.z);
     if (d > reach) {
@@ -102,8 +120,7 @@ export class Fusion {
       local.x *= s; local.y *= s; local.z *= s;
     }
 
-    // MediaPipe → three.js axis remap, with mirror on X to match the
-    // horizontally-flipped video preview.
+    // MediaPipe → three.js axes (+ X-mirror to match the flipped preview).
     const sceneX = -local.x;
     const sceneY = -local.y;
     const sceneZ = -local.z;
@@ -113,10 +130,48 @@ export class Fusion {
   }
 }
 
+// Solve for the rotation that maps the IMU-world frame to the scene frame
+// using two pose correspondences. Procrustes-style with two vectors:
+// build an orthonormal triad from each pair (target + Gram–Schmidt + cross),
+// the rotation between the two triads is exactly R.
+function solveAlignment(imuA: THREE.Quaternion, imuB: THREE.Quaternion): THREE.Quaternion {
+  const vA = PROBE_BLADE_PHONE.clone().applyQuaternion(imuA).normalize();
+  const vB = PROBE_BLADE_PHONE.clone().applyQuaternion(imuB).normalize();
+
+  const u1 = vA.clone();
+  const u2 = vB.clone().addScaledVector(u1, -u1.dot(vB));
+  if (u2.lengthSq() < 1e-4) {
+    console.warn('[calibrate] poses too close to parallel; using identity alignment');
+    return new THREE.Quaternion();
+  }
+  u2.normalize();
+  const u3 = new THREE.Vector3().crossVectors(u1, u2);
+
+  const w1 = SCENE_UP.clone();
+  const w2 = SCENE_TOWARD_CAMERA.clone(); // already ⟂ to SCENE_UP
+  const w3 = new THREE.Vector3().crossVectors(w1, w2);
+
+  const W = new THREE.Matrix4().makeBasis(w1, w2, w3);
+  const U = new THREE.Matrix4().makeBasis(u1, u2, u3);
+  const R = W.multiply(U.transpose());
+
+  return new THREE.Quaternion().setFromRotationMatrix(R);
+}
+
 function midpoint(a: Vec3, b: Vec3): Vec3 {
   return { x: 0.5 * (a.x + b.x), y: 0.5 * (a.y + b.y), z: 0.5 * (a.z + b.z) };
 }
 
-function distance(a: Vec3, b: Vec3): number {
-  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+function measureArm(body: BodyFrame): number {
+  const dL = Math.hypot(
+    body.leftShoulder.x - body.leftWrist.x,
+    body.leftShoulder.y - body.leftWrist.y,
+    body.leftShoulder.z - body.leftWrist.z,
+  );
+  const dR = Math.hypot(
+    body.rightShoulder.x - body.rightWrist.x,
+    body.rightShoulder.y - body.rightWrist.y,
+    body.rightShoulder.z - body.rightWrist.z,
+  );
+  return Math.max(dL, dR, 0.4);
 }

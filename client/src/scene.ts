@@ -1,8 +1,16 @@
 // three.js scene + saber.
 //
 // Scene units = metres, in shoulder-centred body coordinates. The camera sits
-// where the webcam roughly is (~80 cm in front of the user, slightly above
-// origin), looking at the body. Saber is parented to a positionable group.
+// where the webcam roughly is (~2.5 m in front of the user) so that the
+// saber, held in front of the body, fills a reasonable fraction of the view
+// without going off-screen on big swings.
+//
+// Saber is parented to a positionable group. On load we
+//   - rescale the mesh so its longest axis is ~1 m (blade ~= 1 m),
+//   - rotate it so the blade direction is mesh-local +Y,
+//   - translate it so the hilt's base sits at the group's origin.
+// These three transforms let downstream code treat the saber's local +Y
+// as "blade direction" regardless of how the GLB was authored.
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -11,20 +19,19 @@ export type Scene = {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   renderer: THREE.WebGLRenderer;
-  saber: THREE.Group; // saber mesh is parented under this; we move/rotate the group
+  saber: THREE.Group;
   render: () => void;
 };
 
 const SABER_URL = '/lightsaber.glb';
-const SABER_SCALE = 0.015; // tuned so the blade is ~1m long at this scene scale
+const SABER_LENGTH = 1.0;
 
 export function createScene(): Scene {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000000);
 
   const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 100);
-  // Body at origin, camera looking back at it from ~80 cm in front.
-  camera.position.set(0, 0, 0.8);
+  camera.position.set(0, 0, 2.5);
   camera.lookAt(0, 0, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -51,7 +58,7 @@ export function createScene(): Scene {
     SABER_URL,
     (gltf) => {
       const mesh = gltf.scene.children[1] ?? gltf.scene.children[0];
-      mesh.scale.setScalar(SABER_SCALE);
+      normalizeSaberMesh(mesh);
       saber.add(mesh);
     },
     undefined,
@@ -65,4 +72,31 @@ export function createScene(): Scene {
     saber,
     render: () => renderer.render(scene, camera),
   };
+}
+
+function normalizeSaberMesh(mesh: THREE.Object3D): void {
+  const box = new THREE.Box3().setFromObject(mesh);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+
+  // Identify which mesh-local axis the blade extends along (the longest one).
+  const longest = Math.max(size.x, size.y, size.z);
+  const bladeAxis: 'x' | 'y' | 'z' =
+    size.x >= size.y && size.x >= size.z ? 'x' :
+    size.y >= size.z ? 'y' : 'z';
+
+  // Scale so the blade is ~SABER_LENGTH long. Setting scale before rotating is
+  // fine because uniform scale commutes with rotation.
+  mesh.scale.setScalar(SABER_LENGTH / longest);
+
+  // Rotate so the blade axis becomes mesh-local +Y. Rotations chosen so the
+  // chosen positive axis ends up at +Y after the transform.
+  if (bladeAxis === 'x') mesh.rotation.z = Math.PI / 2;
+  else if (bladeAxis === 'z') mesh.rotation.x = -Math.PI / 2;
+
+  // After the rotation, drop the hilt to the group origin: translate the mesh
+  // up so that its minimum Y in world space sits at y=0.
+  mesh.updateMatrixWorld();
+  const aligned = new THREE.Box3().setFromObject(mesh);
+  mesh.position.y = -aligned.min.y;
 }

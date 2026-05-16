@@ -41,11 +41,14 @@ export async function startVision(
   const fileset = await FilesetResolver.forVisionTasks(
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm',
   );
+  // CPU delegate is slower than GPU but dramatically more stable in browsers
+  // (GPU has been observed to throw 'index out of bounds' from the WASM
+  // finishProcessing path on certain driver/browser combos).
   const landmarker = await PoseLandmarker.createFromOptions(fileset, {
     baseOptions: {
       modelAssetPath:
         'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
-      delegate: 'GPU',
+      delegate: 'CPU',
     },
     runningMode: 'VIDEO',
     numPoses: 1,
@@ -54,16 +57,38 @@ export async function startVision(
     minTrackingConfidence: 0.5,
   });
 
+  // Wait until the video element has real frame data and dimensions.
+  // Calling detectForVideo before this gives 'index out of bounds' from WASM.
+  if (video.readyState < 2 || video.videoWidth === 0) {
+    await new Promise<void>((resolve) => {
+      const ok = () => {
+        if (video.readyState >= 2 && video.videoWidth > 0) {
+          video.removeEventListener('loadeddata', ok);
+          resolve();
+        }
+      };
+      video.addEventListener('loadeddata', ok);
+      ok();
+    });
+  }
+
   let stopped = false;
   let lastTimestamp = -1;
+  let inFlight = false;
 
   const tick = () => {
     if (stopped) return;
-    // Browsers can re-emit the same video frame; MediaPipe rejects duplicate
-    // timestamps in VIDEO mode, so we only run when the frame is new.
+    requestAnimationFrame(tick);
+    if (inFlight) return;
+    if (video.readyState < 2 || video.videoWidth === 0) return;
+
     const tsMs = performance.now();
-    if (video.readyState >= 2 && tsMs > lastTimestamp) {
-      lastTimestamp = tsMs;
+    // Timestamps must be strictly monotonic in VIDEO mode.
+    if (tsMs <= lastTimestamp) return;
+    lastTimestamp = tsMs;
+
+    inFlight = true;
+    try {
       const result = landmarker.detectForVideo(video, tsMs);
       const world = result.worldLandmarks?.[0];
       const screen = result.landmarks?.[0]; // image-normalized, has `visibility`
@@ -78,10 +103,11 @@ export async function startVision(
           timeSec: tsMs / 1000,
         });
       }
+    } catch (err) {
+      console.error('[vision] detectForVideo failed', err);
+    } finally {
+      inFlight = false;
     }
-    video.requestVideoFrameCallback
-      ? video.requestVideoFrameCallback(tick)
-      : requestAnimationFrame(tick);
   };
   tick();
 
