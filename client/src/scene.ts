@@ -34,8 +34,8 @@ export function createScene(): Scene {
   // another ~1 m. Worst case (saber up, arm extended) the tip reaches ~1.65 m
   // above origin, so the camera needs to fit that *plus* full side-to-side
   // swings. Camera aimed slightly above origin since the action lives there.
-  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.01, 100);
-  camera.position.set(0, 0.3, 4);
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 100);
+  camera.position.set(0, 0.3, 2.2);
   camera.lookAt(0, 0.5, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });

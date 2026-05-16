@@ -91,6 +91,14 @@ export class Fusion {
 
   updateOrientation(imu: THREE.Quaternion) {
     this.orientation.multiplyQuaternions(this.calibration.alignment, imu);
+    // Mirror the rotation across the YZ plane to match the X-mirrored
+    // position (so a CCW twist by the user appears CCW on the mirrored
+    // screen). Mirroring a quaternion across X=0 negates qy and qz —
+    // rotations around X are unchanged, but rotations involving Y or Z
+    // flip chirality. Blade direction (in YZ plane at calibration poses)
+    // is unaffected; only the "spin around the blade axis" flips.
+    this.orientation.y = -this.orientation.y;
+    this.orientation.z = -this.orientation.z;
   }
 
   updatePosition(body: BodyFrame) {
