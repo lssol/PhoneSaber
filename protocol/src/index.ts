@@ -3,6 +3,7 @@
 // CSV frames, one per WebSocket message:
 //   rotation:     "15,t,x,y,z,w"
 //   acceleration: "10,t,x,y,z"
+//   calibrate:    "cal,t"          — emitted by phone when user presses volume-down
 //
 // The numeric sensor-type prefixes mirror the Android Sensor.TYPE_* constants
 // the original phone client used (TYPE_ROTATION_VECTOR=15, TYPE_LINEAR_ACCELERATION=10).
@@ -10,6 +11,7 @@
 
 export const SENSOR_ROTATION = 15;
 export const SENSOR_ACCELERATION = 10;
+export const CALIBRATE_TAG = 'cal';
 
 export type RotationFrame = {
   kind: 'rotation';
@@ -28,18 +30,30 @@ export type AccelerationFrame = {
   z: number;
 };
 
-export type SensorFrame = RotationFrame | AccelerationFrame;
+export type CalibrateFrame = {
+  kind: 'calibrate';
+  t: number;
+};
+
+export type SensorFrame = RotationFrame | AccelerationFrame | CalibrateFrame;
 
 export function encode(frame: SensorFrame): string {
   if (frame.kind === 'rotation') {
     return `${SENSOR_ROTATION},${frame.t},${frame.x},${frame.y},${frame.z},${frame.w}`;
   }
-  return `${SENSOR_ACCELERATION},${frame.t},${frame.x},${frame.y},${frame.z}`;
+  if (frame.kind === 'acceleration') {
+    return `${SENSOR_ACCELERATION},${frame.t},${frame.x},${frame.y},${frame.z}`;
+  }
+  return `${CALIBRATE_TAG},${frame.t}`;
 }
 
 export function decode(line: string): SensorFrame | null {
   const values = line.split(',');
-  const type = Number(values[0]);
+  const tag = values[0];
+  if (tag === CALIBRATE_TAG && values.length >= 2) {
+    return { kind: 'calibrate', t: Number(values[1]) };
+  }
+  const type = Number(tag);
   if (type === SENSOR_ROTATION && values.length >= 6) {
     return {
       kind: 'rotation',

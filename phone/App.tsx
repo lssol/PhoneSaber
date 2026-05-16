@@ -44,9 +44,16 @@ export default function App() {
         sentRef.current++;
       }
     });
+    const subC = SensorFusion.onCalibrate((e) => {
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(encode({ kind: 'calibrate', t: e.t }));
+      }
+    });
     return () => {
       subR.remove();
       subA.remove();
+      subC.remove();
     };
   }, []);
 

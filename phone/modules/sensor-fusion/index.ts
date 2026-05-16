@@ -15,9 +15,14 @@ export type AccelerationEvent = {
   z: number;
 };
 
+export type CalibrateEvent = {
+  t: number;
+};
+
 type SensorFusionEvents = {
   onRotation: (event: RotationEvent) => void;
   onAcceleration: (event: AccelerationEvent) => void;
+  onCalibrate: (event: CalibrateEvent) => void;
 };
 
 declare class SensorFusionNative extends NativeModule<SensorFusionEvents> {
@@ -35,3 +40,6 @@ export const onRotation = (cb: (event: RotationEvent) => void) =>
 
 export const onAcceleration = (cb: (event: AccelerationEvent) => void) =>
   native.addListener('onAcceleration', cb);
+
+export const onCalibrate = (cb: (event: CalibrateEvent) => void) =>
+  native.addListener('onCalibrate', cb);

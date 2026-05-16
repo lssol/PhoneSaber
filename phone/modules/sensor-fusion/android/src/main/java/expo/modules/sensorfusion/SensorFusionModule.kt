@@ -13,6 +13,13 @@ class SensorFusionModule : Module() {
   private var rotationListener: SensorEventListener? = null
   private var accelListener: SensorEventListener? = null
 
+  companion object {
+    // MainActivity.onKeyDown hooks the hardware volume-down button and calls this.
+    // Held as a process-wide singleton so MainActivity doesn't need a reference
+    // to the live module instance (which is bound to the JS runtime lifecycle).
+    @Volatile var calibrationTrigger: (() -> Unit)? = null
+  }
+
   private fun startSensors(intervalMicros: Int) {
     val ctx = appContext.reactContext ?: return
     val sm = ctx.getSystemService(Context.SENSOR_SERVICE) as SensorManager
@@ -72,7 +79,17 @@ class SensorFusionModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("SensorFusionModule")
 
-    Events("onRotation", "onAcceleration")
+    Events("onRotation", "onAcceleration", "onCalibrate")
+
+    OnCreate {
+      calibrationTrigger = {
+        sendEvent("onCalibrate", mapOf("t" to System.nanoTime()))
+      }
+    }
+
+    OnDestroy {
+      calibrationTrigger = null
+    }
 
     Function("start") { intervalMicros: Int ->
       startSensors(intervalMicros)

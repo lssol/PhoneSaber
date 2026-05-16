@@ -4,6 +4,7 @@
 
 export const SENSOR_ROTATION = 15;
 export const SENSOR_ACCELERATION = 10;
+export const CALIBRATE_TAG = 'cal';
 
 export type RotationFrame = {
   kind: 'rotation';
@@ -22,11 +23,19 @@ export type AccelerationFrame = {
   z: number;
 };
 
-export type SensorFrame = RotationFrame | AccelerationFrame;
+export type CalibrateFrame = {
+  kind: 'calibrate';
+  t: number;
+};
+
+export type SensorFrame = RotationFrame | AccelerationFrame | CalibrateFrame;
 
 export function encode(frame: SensorFrame): string {
   if (frame.kind === 'rotation') {
     return `${SENSOR_ROTATION},${frame.t},${frame.x},${frame.y},${frame.z},${frame.w}`;
   }
-  return `${SENSOR_ACCELERATION},${frame.t},${frame.x},${frame.y},${frame.z}`;
+  if (frame.kind === 'acceleration') {
+    return `${SENSOR_ACCELERATION},${frame.t},${frame.x},${frame.y},${frame.z}`;
+  }
+  return `${CALIBRATE_TAG},${frame.t}`;
 }
