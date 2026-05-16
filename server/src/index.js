@@ -31,7 +31,8 @@ wss.on('connection', function connection(ws) {
   connections.push(ws)
   ws.on('message', function incoming(message) {
     counter.count()
-    connections.filter(con => con != ws).forEach(con => con.send(message))
+    const text = message.toString()
+    connections.filter(con => con != ws).forEach(con => con.send(text))
   })
 });
 
