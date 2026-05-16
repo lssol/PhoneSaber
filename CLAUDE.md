@@ -47,6 +47,7 @@ Individual scripts: `npm run server`, `npm run client`, `npm run phone`. Open ht
 - **Translation**: not applied. The old double-integration + position-dependent friction code in `client/src/index.js` was deleted in the TS rewrite; it never produced usable results without visual fusion.
 - **Asset path**: GLB lives in `client/public/lightsaber.glb` and is served at `/lightsaber.glb`.
 - **WS URL**: derived from `location.hostname`, so opening the viewer via LAN IP automatically points the WS at the same host on `:8080`.
+- **Audio** (`client/src/audio.ts`): hum loop + swing whoosh via Web Audio. Spacebar doubles as the user-gesture that unlocks the AudioContext and starts the hum. Swings are triggered from linear-accel magnitude with a cooldown; gain and pitch scale with intensity. Assets in `client/public/sounds/` are CC0 from opengameart.org (`light_sabre1` and the `swishes` pack).
 
 ## Phone
 

@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { decode } from '@phonesaber/protocol';
+import {
+  maybeTriggerSwing,
+  setHumIntensity,
+  startHum,
+  unlockAudio,
+} from './audio';
 
 const WS_URL = `ws://${location.hostname}:8080`;
 const SABER_URL = '/lightsaber.glb';
@@ -13,7 +19,7 @@ setInterval(() => {
   hud.textContent =
     `${WS_URL}  ${connectionState}\n` +
     `rot ${stats.rot}/s   acc ${stats.acc}/s   dropped ${stats.dropped}\n` +
-    `space: calibrate`;
+    `space: calibrate + start sound`;
   stats.rot = 0;
   stats.acc = 0;
 }, 1000);
@@ -68,6 +74,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     calibration.copy(phoneRotation);
     console.log('[calibrate] baseline set');
+    // Spacebar doubles as the user gesture that unlocks audio + starts the hum.
+    unlockAudio().then(startHum);
   }
 });
 
@@ -97,6 +105,9 @@ ws.addEventListener('message', (e) => {
     phoneRotation.set(frame.x, frame.y, frame.z, frame.w);
   } else {
     stats.acc++;
+    const intensity = Math.hypot(frame.x, frame.y, frame.z);
+    maybeTriggerSwing(intensity);
+    setHumIntensity(intensity);
   }
 });
 
