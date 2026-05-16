@@ -12,12 +12,7 @@ import { createScene } from './scene';
 import { connectSensors } from './sensors';
 import { startVision, type BodyFrame } from './vision';
 import { Fusion, calibrate, defaultCalibration } from './fusion';
-import {
-  maybeTriggerSwing,
-  setHumIntensity,
-  startHum,
-  unlockAudio,
-} from './audio';
+import { maybeTriggerSwing, startHum, unlockAudio } from './audio';
 
 const WS_URL = `ws://${location.hostname}:8080`;
 
@@ -49,9 +44,7 @@ connectSensors(WS_URL, {
   },
   onAcceleration: (f) => {
     stats.acc++;
-    const intensity = Math.hypot(f.x, f.y, f.z);
-    maybeTriggerSwing(intensity);
-    setHumIntensity(intensity);
+    maybeTriggerSwing(Math.hypot(f.x, f.y, f.z));
   },
   onCalibrate: doCalibrate,
 });

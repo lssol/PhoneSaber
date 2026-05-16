@@ -1,23 +1,24 @@
 // Web Audio wiring for the lightsaber:
-//   - looping hum once unlocked
-//   - one-shot swing whose gain + pitch scale with the swing intensity
+//   - looping hum once unlocked (constant pitch — modulating it makes
+//     the saber sound like a tortured animal)
+//   - one-shot swing on motion, picked randomly from a small bank
 //
 // The AudioContext can only be created from a user gesture, so callers
 // must invoke `unlockAudio()` from a click/keydown handler before the
 // other functions do anything.
 
 const HUM_URL = '/sounds/hum.mp3';
-const SWING_URL = '/sounds/swing.wav';
+const SWING_URLS = ['/sounds/swing.mp3', '/sounds/swing2.mp3'];
 
-const SWING_COOLDOWN_MS = 120;
-// Linear-accel magnitude (m/s²) below which we ignore motion entirely.
-const SWING_MIN_INTENSITY = 8;
-// Magnitude that maps to full swing gain / max pitch.
-const SWING_FULL_INTENSITY = 30;
+// Swing trigger thresholds, in m/s² (|linear acceleration|). Tuned so
+// gentle/idle motion is silent and only deliberate swings fire.
+const SWING_MIN_INTENSITY = 18;
+const SWING_FULL_INTENSITY = 45;
+const SWING_COOLDOWN_MS = 350;
 
 let ctx: AudioContext | null = null;
 let humBuffer: AudioBuffer | null = null;
-let swingBuffer: AudioBuffer | null = null;
+let swingBuffers: AudioBuffer[] = [];
 let humSource: AudioBufferSourceNode | null = null;
 let humGain: GainNode | null = null;
 let lastSwingAt = 0;
@@ -31,17 +32,19 @@ async function loadBuffer(url: string): Promise<AudioBuffer> {
 export async function unlockAudio(): Promise<void> {
   if (ctx) return;
   ctx = new AudioContext();
-  [humBuffer, swingBuffer] = await Promise.all([
+  const [hum, ...swings] = await Promise.all([
     loadBuffer(HUM_URL),
-    loadBuffer(SWING_URL),
+    ...SWING_URLS.map(loadBuffer),
   ]);
+  humBuffer = hum;
+  swingBuffers = swings;
   console.log('[audio] ready');
 }
 
 export function startHum(): void {
   if (!ctx || !humBuffer || humSource) return;
   humGain = ctx.createGain();
-  humGain.gain.value = 0.25;
+  humGain.gain.value = 0.35;
   humGain.connect(ctx.destination);
   humSource = ctx.createBufferSource();
   humSource.buffer = humBuffer;
@@ -59,10 +62,9 @@ export function stopHum(): void {
 }
 
 // Call this with the |linear acceleration| (m/s²) from each accel frame.
-// Triggers at most one swing per cooldown window; gain + pitch scale
-// with intensity.
+// Fires at most one swing per cooldown window; gain scales with intensity.
 export function maybeTriggerSwing(intensity: number): void {
-  if (!ctx || !swingBuffer) return;
+  if (!ctx || swingBuffers.length === 0) return;
   if (intensity < SWING_MIN_INTENSITY) return;
   const now = performance.now();
   if (now - lastSwingAt < SWING_COOLDOWN_MS) return;
@@ -74,20 +76,11 @@ export function maybeTriggerSwing(intensity: number): void {
       (SWING_FULL_INTENSITY - SWING_MIN_INTENSITY),
   );
 
+  const buffer = swingBuffers[Math.floor(Math.random() * swingBuffers.length)];
   const src = ctx.createBufferSource();
-  src.buffer = swingBuffer;
-  src.playbackRate.value = 0.8 + 0.7 * t;
+  src.buffer = buffer;
   const gain = ctx.createGain();
-  gain.gain.value = 0.3 + 0.7 * t;
+  gain.gain.value = 0.5 + 0.5 * t;
   src.connect(gain).connect(ctx.destination);
   src.start();
-}
-
-// Boost hum pitch slightly while moving — feels "alive" without needing
-// a real ramp. Pass |angular velocity| or |accel| in any unit; we just
-// map [0, 30] → [1.0, 1.15].
-export function setHumIntensity(intensity: number): void {
-  if (!humSource) return;
-  const t = Math.min(1, intensity / 30);
-  humSource.playbackRate.value = 1 + 0.15 * t;
 }
