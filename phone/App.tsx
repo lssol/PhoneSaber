@@ -1,25 +1,30 @@
-import { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, TextInput, Pressable } from 'react-native';
-import { StatusBar } from 'expo-status-bar';
-import * as SensorFusion from './modules/sensor-fusion';
-import { encode } from './protocol';
+import { useState, useEffect, useRef } from "react";
+import { StyleSheet, Text, View, TextInput, Pressable } from "react-native";
+import { StatusBar } from "expo-status-bar";
+import * as SensorFusion from "./modules/sensor-fusion";
+import { useKeepAwakeSafe } from "./keepAwake";
+import { encode } from "./protocol";
 
 const SAMPLE_INTERVAL_MICROS = 20000; // ~50 Hz
+const TRIPLE_TAP_WINDOW_MS = 600;
 
 type ConnectionStatus =
-  | { kind: 'idle' }
-  | { kind: 'connecting' }
-  | { kind: 'streaming' }
-  | { kind: 'disconnected' }
-  | { kind: 'error'; message: string };
+  | { kind: "idle" }
+  | { kind: "connecting" }
+  | { kind: "streaming" }
+  | { kind: "disconnected" }
+  | { kind: "error"; message: string };
 
 export default function App() {
-  const [url, setUrl] = useState('ws://192.168.1.10:8080');
-  const [status, setStatus] = useState<ConnectionStatus>({ kind: 'idle' });
+  useKeepAwakeSafe();
+  const [url, setUrl] = useState("ws://192.168.1.10:8080");
+  const [status, setStatus] = useState<ConnectionStatus>({ kind: "idle" });
   const [rate, setRate] = useState(0);
+  const [locked, setLocked] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const sentRef = useRef(0);
   const runningRef = useRef(false);
+  const tapTimesRef = useRef<number[]>([]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -33,21 +38,25 @@ export default function App() {
     const subR = SensorFusion.onRotation((e) => {
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(encode({ kind: 'rotation', t: e.t, x: e.x, y: e.y, z: e.z, w: e.w }));
+        ws.send(
+          encode({ kind: "rotation", t: e.t, x: e.x, y: e.y, z: e.z, w: e.w }),
+        );
         sentRef.current++;
       }
     });
     const subA = SensorFusion.onAcceleration((e) => {
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(encode({ kind: 'acceleration', t: e.t, x: e.x, y: e.y, z: e.z }));
+        ws.send(
+          encode({ kind: "acceleration", t: e.t, x: e.x, y: e.y, z: e.z }),
+        );
         sentRef.current++;
       }
     });
     const subC = SensorFusion.onCalibrate((e) => {
       const ws = wsRef.current;
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(encode({ kind: 'calibrate', t: e.t }));
+        ws.send(encode({ kind: "calibrate", t: e.t }));
       }
     });
     return () => {
@@ -60,20 +69,22 @@ export default function App() {
   const start = () => {
     if (runningRef.current) return;
     runningRef.current = true;
-    setStatus({ kind: 'connecting' });
+    tapTimesRef.current = [];
+    setStatus({ kind: "connecting" });
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.onopen = () => {
-      setStatus({ kind: 'streaming' });
+      setStatus({ kind: "streaming" });
       SensorFusion.start(SAMPLE_INTERVAL_MICROS);
+      setLocked(true);
     };
     ws.onerror = (e) => {
-      const message = (e as { message?: string }).message ?? 'unknown';
-      setStatus({ kind: 'error', message });
+      const message = (e as { message?: string }).message ?? "unknown";
+      setStatus({ kind: "error", message });
     };
     ws.onclose = () => {
       SensorFusion.stop();
-      setStatus({ kind: 'disconnected' });
+      setStatus({ kind: "disconnected" });
       runningRef.current = false;
     };
   };
@@ -84,6 +95,28 @@ export default function App() {
     wsRef.current = null;
     runningRef.current = false;
   };
+
+  const onDotTap = () => {
+    const now = Date.now();
+    const recent = tapTimesRef.current.filter(
+      (t) => now - t < TRIPLE_TAP_WINDOW_MS,
+    );
+    recent.push(now);
+    tapTimesRef.current = recent;
+    if (recent.length >= 3) {
+      tapTimesRef.current = [];
+      setLocked(false);
+    }
+  };
+
+  if (locked) {
+    return (
+      <View style={styles.lockedContainer}>
+        <StatusBar hidden />
+        <Pressable style={styles.dot} onPress={onDotTap} />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -115,29 +148,54 @@ export default function App() {
 
 function renderStatus(status: ConnectionStatus): string {
   switch (status.kind) {
-    case 'idle':
-      return 'idle';
-    case 'connecting':
-      return 'connecting';
-    case 'streaming':
-      return 'streaming';
-    case 'disconnected':
-      return 'disconnected';
-    case 'error':
+    case "idle":
+      return "idle";
+    case "connecting":
+      return "connecting";
+    case "streaming":
+      return "streaming";
+    case "disconnected":
+      return "disconnected";
+    case "error":
       return `error: ${status.message}`;
   }
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0a0a0a', padding: 20, paddingTop: 80 },
-  title: { color: '#3f3', fontSize: 32, fontWeight: 'bold', marginBottom: 40 },
-  label: { color: '#888', fontSize: 13, marginBottom: 6, textTransform: 'uppercase', letterSpacing: 1 },
-  input: { backgroundColor: '#1a1a1a', color: '#fff', padding: 14, borderRadius: 6, fontSize: 16, fontFamily: 'Menlo' },
-  row: { flexDirection: 'row', gap: 12, marginTop: 16 },
-  btn: { flex: 1, padding: 18, borderRadius: 6, alignItems: 'center' },
-  btnStart: { backgroundColor: '#063' },
-  btnStop: { backgroundColor: '#411' },
-  btnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
-  status: { color: '#aaa', marginTop: 24, fontSize: 16 },
-  rate: { color: '#3f3', marginTop: 6, fontSize: 14, fontFamily: 'Menlo' },
+  container: {
+    flex: 1,
+    backgroundColor: "#0a0a0a",
+    padding: 20,
+    paddingTop: 80,
+  },
+  title: { color: "#3f3", fontSize: 32, fontWeight: "bold", marginBottom: 40 },
+  label: {
+    color: "#888",
+    fontSize: 13,
+    marginBottom: 6,
+    textTransform: "uppercase",
+    letterSpacing: 1,
+  },
+  input: {
+    backgroundColor: "#1a1a1a",
+    color: "#fff",
+    padding: 14,
+    borderRadius: 6,
+    fontSize: 16,
+    fontFamily: "Menlo",
+  },
+  row: { flexDirection: "row", gap: 12, marginTop: 16 },
+  btn: { flex: 1, padding: 18, borderRadius: 6, alignItems: "center" },
+  btnStart: { backgroundColor: "#063" },
+  btnStop: { backgroundColor: "#411" },
+  btnText: { color: "#fff", fontSize: 16, fontWeight: "600" },
+  status: { color: "#aaa", marginTop: 24, fontSize: 16 },
+  rate: { color: "#3f3", marginTop: 6, fontSize: 14, fontFamily: "Menlo" },
+  lockedContainer: {
+    flex: 1,
+    backgroundColor: "#000",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  dot: { width: 18, height: 18, borderRadius: 9, backgroundColor: "#c00" },
 });
