@@ -48,7 +48,6 @@ export async function unlockAudio(): Promise<void> {
   ]);
   humBuffer = hum;
   swingBuffers = swings;
-  console.log('[audio] ready');
 }
 
 export function startHum(): void {
@@ -79,7 +78,6 @@ export function maybeTriggerSwing(intensity: number): void {
   const now = performance.now();
   if (intensity > windowPeak) windowPeak = intensity;
   if (now - windowStart > 1000) {
-    console.log(`[audio] peak |accel| last 1s: ${windowPeak.toFixed(1)} m/s²`);
     windowPeak = 0;
     windowStart = now;
   }
@@ -95,9 +93,7 @@ export function maybeTriggerSwing(intensity: number): void {
   );
 
   const rate = SWING_RATE_MIN + (SWING_RATE_MAX - SWING_RATE_MIN) * t;
-  console.log(
-    `[audio] swing intensity=${intensity.toFixed(1)} m/s² t=${t.toFixed(2)} rate=${rate.toFixed(2)}`,
-  );
+
 
   const buffer = swingBuffers[Math.floor(Math.random() * swingBuffers.length)];
   const src = ctx.createBufferSource();

@@ -13,14 +13,12 @@ setInterval(() => {
   const now = Date.now();
   const elapsed = (now - lastReport) / 1000;
   const rate = inFlight / elapsed;
-  console.log(`[server] ${rate.toFixed(1)} msg/s • ${connections.size} clients`);
   inFlight = 0;
   lastReport = now;
 }, 1000);
 
 wss.on('connection', (ws, req) => {
   connections.add(ws);
-  console.log(`[server] connect ${req.socket.remoteAddress} (${connections.size} total)`);
 
   ws.on('message', (data, isBinary) => {
     inFlight++;
@@ -41,8 +39,5 @@ wss.on('connection', (ws, req) => {
 
   ws.on('close', () => {
     connections.delete(ws);
-    console.log(`[server] disconnect (${connections.size} total)`);
   });
 });
-
-console.log(`[server] listening on ws://0.0.0.0:${PORT}`);

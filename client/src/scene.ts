@@ -14,17 +14,20 @@
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { createSaberTrail, type SaberTrail } from './saberTrail';
 
 export type Scene = {
   scene: THREE.Scene;
   camera: THREE.PerspectiveCamera;
   renderer: THREE.WebGLRenderer;
   saber: THREE.Group;
+  updateSaberTrail: (nowMs: number) => void;
   render: () => void;
 };
 
 const SABER_URL = '/lightsaber.glb';
 const SABER_LENGTH = 1.0;
+const BLADE_COLOR = 0x36a3ff;
 
 export function createScene(): Scene {
   const scene = new THREE.Scene();
@@ -58,13 +61,16 @@ export function createScene(): Scene {
 
   const saber = new THREE.Group();
   scene.add(saber);
+  let trail: SaberTrail | null = null;
 
   new GLTFLoader().load(
     SABER_URL,
     (gltf) => {
       const mesh = gltf.scene.children[1] ?? gltf.scene.children[0];
       normalizeSaberMesh(mesh);
+      tintExistingBlade(mesh);
       saber.add(mesh);
+      trail = createSaberTrail(scene, mesh, isBladeMaterial);
     },
     undefined,
     (err) => console.error('[scene] failed to load saber', err),
@@ -75,6 +81,7 @@ export function createScene(): Scene {
     camera,
     renderer,
     saber,
+    updateSaberTrail: (nowMs) => trail?.update(nowMs),
     render: () => renderer.render(scene, camera),
   };
 }
@@ -104,4 +111,31 @@ function normalizeSaberMesh(mesh: THREE.Object3D): void {
   mesh.updateMatrixWorld();
   const aligned = new THREE.Box3().setFromObject(mesh);
   mesh.position.y = -aligned.min.y;
+}
+
+function tintExistingBlade(root: THREE.Object3D): void {
+  root.traverse((child) => {
+    if (!(child instanceof THREE.Mesh)) return;
+
+    const materials = Array.isArray(child.material) ? child.material : [child.material];
+    for (const material of materials) {
+      if (!(material instanceof THREE.MeshStandardMaterial) && !(material instanceof THREE.MeshPhysicalMaterial)) continue;
+      if (!isBladeMaterial(material)) continue;
+
+      material.color.setHex(BLADE_COLOR);
+      material.emissive.setHex(BLADE_COLOR);
+      material.needsUpdate = true;
+    }
+  });
+}
+
+function isBladeMaterial(material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial): boolean {
+  const name = material.name.toLowerCase();
+  const emissiveStrength =
+    material.emissive.r * material.emissive.r +
+    material.emissive.g * material.emissive.g +
+    material.emissive.b * material.emissive.b;
+  const isNamedBlade = /(blade|light|glow|emissive|laser)/.test(name);
+  const isOriginalGlowingBlade = material.transparent && emissiveStrength > 0.1 && material.metalness === 0;
+  return isNamedBlade || isOriginalGlowingBlade;
 }

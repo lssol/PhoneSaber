@@ -48,9 +48,12 @@
 // on the visual left, and so is the saber).
 //
 // On top of the raw mapping:
-//   • POS_GAIN amplifies X/Y so wrist motion fills a saber-sized workspace.
-//   • A calibrated rest-Z / stab-Z pair turns a real ~15–20 cm wrist thrust
-//     into Z_STAB_TARGET of scene-Z travel.
+//   • POS_GAIN amplifies all three axes uniformly so wrist motion fills a
+//     saber-sized workspace and depth feels proportionate to lateral motion.
+//   • The forward calibration pose records `restZ` (the wrist depth at your
+//     resting forward stance) so that point lands at scene Z = 0 — reaching
+//     further forward pushes the saber into the screen, pulling back yanks
+//     it toward the camera. No separate "stab" knob; one gain rules all.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // High-rate prediction (IMU-aided dead reckoning between vision frames)
@@ -60,8 +63,8 @@
 // `integrateAccel` rotates phone-frame accel into the scene frame via
 // `alignment · q_imu` (no extra X-flip — the mirror is already in the
 // alignment basis, see above) and integrates p += v·dt + ½·a·dt², v += a·dt
-// at IMU rate. The same POS_GAIN / zGain that `updatePosition` applies to
-// the vision target also apply to the rotated accel so the units match.
+// at IMU rate. The same POS_GAIN that `updatePosition` applies to the vision
+// target also applies to the rotated accel so the units match.
 //
 // Each vision frame is a correction step: blend the dead-reckoned position
 // toward the vision target by `VISION_CORRECTION_GAIN`, damp velocity by
@@ -74,18 +77,15 @@ import * as THREE from 'three';
 import type { BodyFrame, Vec3 } from './vision';
 import { OneEuroVec3 } from './filter';
 
-const POS_MIN_CUTOFF = 1.0;
-const POS_BETA = 0.02;
+const POS_MIN_CUTOFF = 1.8;
+const POS_BETA = 0.03;
 
-// Lateral/vertical gain on shoulder-relative grip position. Wrist motion is
-// smaller than what feels like a "saber-sized" workspace, so we amplify.
-const POS_GAIN = 1.7;
-
-// Scene-Z travel the saber should cover from rest pose to a full stab.
-const Z_STAB_TARGET = 0.6;
-// Minimum measured stab range (m) before we trust the calibration. Below this
-// the user probably didn't move during the stab capture; fall back to POS_GAIN.
-const Z_STAB_MIN = 0.05;
+// Gain applied to shoulder-relative grip position on *all three axes*. Wrist
+// motion is smaller than what feels like a "saber-sized" workspace, so we
+// amplify — and we apply the same factor to Z so depth feels proportionate
+// to lateral motion (rather than the asymmetric per-axis stab amplification
+// the previous design used).
+const POS_GAIN = 2.8;
 
 // IMU-aided dead reckoning.
 const MAX_DEAD_RECKON_DT = 0.05;
@@ -106,7 +106,6 @@ export type CalibrationStage =
   | 'idle'
   | 'awaiting-up'
   | 'awaiting-forward'
-  | 'awaiting-stab'
   | 'ready';
 
 export type Calibration = {
@@ -114,41 +113,40 @@ export type Calibration = {
   alignment: THREE.Quaternion;
   // Arm reach measured at calibration time (shoulder→wrist). Used for clamping.
   armLength: number;
-  // Grip scene-Z at the forward pose — the rest pose for stabbing.
+  // Grip scene-Z at the forward pose — the zero point for depth. Subtracting
+  // this in updatePosition makes the saber sit at scene origin at rest.
   restZ: number;
-  // Grip scene-Z at the stab pose — full forward extension.
-  stabZ: number;
 };
 
 export function defaultCalibration(): Calibration {
-  return { alignment: new THREE.Quaternion(), armLength: 0.65, restZ: 0, stabZ: 0 };
+  return { alignment: new THREE.Quaternion(), armLength: 0.65, restZ: 0 };
 }
 
 export class Fusion {
   readonly position = new THREE.Vector3();
   readonly orientation = new THREE.Quaternion();
   stage: CalibrationStage = 'idle';
+  lastCorrectionDeltaM = 0;
 
   private readonly posFilter = new OneEuroVec3(POS_MIN_CUTOFF, POS_BETA);
   private readonly velocity = new THREE.Vector3();
   private lastAccelTime: number | null = null;
   private lastVisionTime = -Infinity;
   private imuPoseA: THREE.Quaternion | null = null;
-  private pending: { alignment: THREE.Quaternion; armLength: number; restZ: number } | null = null;
 
   constructor(public calibration: Calibration = defaultCalibration()) {}
 
   // Cycle through the calibration state machine. Each call advances one step:
-  //   idle → awaiting-up → awaiting-forward → awaiting-stab → ready
-  // The press in 'idle' is a no-op capture — it just unlocks the prompt for the
-  // first real pose. Each subsequent press captures the relevant IMU / body
-  // sample.
+  //   idle → awaiting-up → awaiting-forward → ready
+  // The press in 'idle' is a primer — it just unlocks the prompt for the
+  // first real pose. The 'awaiting-up' press captures IMU pose A; the
+  // 'awaiting-forward' press captures IMU pose B, solves the alignment, and
+  // records the rest forward grip Z (depth zero-point) and arm reach.
   capturePose(imu: THREE.Quaternion, body: BodyFrame | null): CalibrationStage {
     switch (this.stage) {
       case 'idle':
       case 'ready':
         this.imuPoseA = null;
-        this.pending = null;
         this.stage = 'awaiting-up';
         return this.stage;
 
@@ -161,16 +159,7 @@ export class Fusion {
         const alignment = solveAlignment(this.imuPoseA!, imu);
         const armLength = body ? measureArm(body) : this.calibration.armLength;
         const restZ = body ? gripSceneZ(body) : 0;
-        this.pending = { alignment, armLength, restZ };
-        this.stage = 'awaiting-stab';
-        return this.stage;
-      }
-
-      case 'awaiting-stab': {
-        const stabZ = body ? gripSceneZ(body) : (this.pending?.restZ ?? 0) + Z_STAB_TARGET;
-        const { alignment, armLength, restZ } = this.pending!;
-        this.calibration = { alignment, armLength, restZ, stabZ };
-        this.pending = null;
+        this.calibration = { alignment, armLength, restZ };
         this.imuPoseA = null;
         this.posFilter.reset();
         this.velocity.set(0, 0, 0);
@@ -184,7 +173,6 @@ export class Fusion {
 
   resetCalibration() {
     this.imuPoseA = null;
-    this.pending = null;
     this.stage = 'idle';
   }
 
@@ -209,16 +197,15 @@ export class Fusion {
     }
 
     // MediaPipe → three.js axes (+ X-mirror to match the flipped preview).
-    // X/Y: uniform gain so the workspace feels bigger than raw wrist motion.
+    // Same POS_GAIN on all three axes so depth feels proportionate to lateral
+    // motion. For Z we re-centre on the calibrated rest pose so the saber sits
+    // at scene origin when your wrists are in their resting forward position,
+    // and the outer negation sends a forward stab to -Z_scene (into the screen,
+    // matching the blade direction — see the header note on the basis-flip
+    // mirror).
     const sceneX = -local.x * POS_GAIN;
     const sceneY = -local.y * POS_GAIN;
-
-    // Z: amplify deviation from the calibrated rest forward pose so a ~15–20 cm
-    // wrist stab reads as a meaningful saber thrust. The final negation sends
-    // the saber to -Z_scene on a forward stab — into the screen, matching the
-    // blade direction (see the header note on the basis-flip mirror).
-    const rawSceneZ = -local.z;
-    const sceneZ = -(rawSceneZ - this.calibration.restZ) * this.zGain();
+    const sceneZ = -(-local.z - this.calibration.restZ) * POS_GAIN;
 
     const [tx, ty, tz] = this.posFilter.filter(sceneX, sceneY, sceneZ, body.timeSec);
 
@@ -238,7 +225,8 @@ export class Fusion {
     const dx = tx - this.position.x;
     const dy = ty - this.position.y;
     const dz = tz - this.position.z;
-    if (dx * dx + dy * dy + dz * dz > SNAP_DISTANCE_M * SNAP_DISTANCE_M) {
+    this.lastCorrectionDeltaM = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (this.lastCorrectionDeltaM > SNAP_DISTANCE_M) {
       this.position.set(tx, ty, tz);
       this.velocity.set(0, 0, 0);
     } else {
@@ -269,22 +257,14 @@ export class Fusion {
     const a = new THREE.Vector3(ax, ay, az)
       .applyQuaternion(imu)
       .applyQuaternion(this.calibration.alignment);
-    // Match position's per-axis gain so integration units agree. The outer
-    // negation in `sceneZ = -(rawSceneZ - restZ) * zGain` and the negation
-    // inside `rawSceneZ = -local.z` cancel in the second derivative, leaving
-    // a clean positive zGain for accel-Z too.
-    a.x *= POS_GAIN;
-    a.y *= POS_GAIN;
-    a.z *= this.zGain();
+    // Match position's per-axis gain so integration units agree. Z gets the
+    // same POS_GAIN as X/Y — the two negations in updatePosition (`-local.z`
+    // and the outer `-(...)`) cancel in the second derivative.
+    a.multiplyScalar(POS_GAIN);
 
     this.position.addScaledVector(this.velocity, dt);
     this.position.addScaledVector(a, 0.5 * dt * dt);
     this.velocity.addScaledVector(a, dt);
-  }
-
-  private zGain(): number {
-    const stabRange = this.calibration.stabZ - this.calibration.restZ;
-    return Math.abs(stabRange) >= Z_STAB_MIN ? Z_STAB_TARGET / stabRange : POS_GAIN;
   }
 }
 
@@ -310,7 +290,7 @@ function gripShoulderLocal(body: BodyFrame): Vec3 | null {
 }
 
 // Grip Z in the scene frame (toward camera = +Z), matching what updatePosition
-// would compute pre-gain. Used at calibration time to record the rest/stab Z.
+// would compute pre-gain. Used at calibration time to record restZ.
 function gripSceneZ(body: BodyFrame): number {
   const local = gripShoulderLocal(body);
   return local ? -local.z : 0;

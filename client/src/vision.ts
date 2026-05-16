@@ -1,14 +1,14 @@
 // Webcam → MediaPipe Pose → upper-body landmarks in metres.
 //
-// We only need four landmarks: left/right shoulder and left/right wrist.
-// MediaPipe's `worldLandmarks` give us 3D coords in metres with the origin
-// at hip-centre, which is exactly the body-anchored frame we want.
+// Runs on the main thread (MediaPipe internally uses importScripts() in its
+// WASM loader, which is incompatible with both module and classic web workers).
+// GPU delegate is tried first; falls back to CPU on failure.
 //
-// Axes (verified empirically against MediaPipe Pose):
+// Axes (MediaPipe world frame, verified empirically):
 //   +X = subject's left   (image right when not mirrored)
 //   +Y = down
 //   +Z = away from camera
-// We re-map to three.js convention in fusion.ts.
+// Re-mapped to three.js convention in fusion.ts.
 
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
@@ -22,6 +22,7 @@ export type BodyFrame = {
   leftWristVisible: boolean;
   rightWristVisible: boolean;
   timeSec: number;
+  processingMs: number;
 };
 
 const LM = { LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12, LEFT_WRIST: 15, RIGHT_WRIST: 16 } as const;
@@ -30,9 +31,9 @@ const MIN_VISIBILITY = 0.5;
 export async function startVision(
   video: HTMLVideoElement,
   onFrame: (frame: BodyFrame) => void,
-): Promise<() => void> {
+): Promise<{ stop: () => void; delegate: string }> {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: 640, height: 480, facingMode: 'user' },
+    video: { width: 320, height: 240, facingMode: 'user' },
     audio: false,
   });
   video.srcObject = stream;
@@ -41,24 +42,30 @@ export async function startVision(
   const fileset = await FilesetResolver.forVisionTasks(
     'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.18/wasm',
   );
-  // CPU delegate is slower than GPU but dramatically more stable in browsers
-  // (GPU has been observed to throw 'index out of bounds' from the WASM
-  // finishProcessing path on certain driver/browser combos).
-  const landmarker = await PoseLandmarker.createFromOptions(fileset, {
-    baseOptions: {
-      modelAssetPath:
-        'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
-      delegate: 'CPU',
-    },
-    runningMode: 'VIDEO',
+
+  const MODEL_URL =
+    'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+
+  const opts = (delegate: 'GPU' | 'CPU') => ({
+    baseOptions: { modelAssetPath: MODEL_URL, delegate },
+    runningMode: 'VIDEO' as const,
     numPoses: 1,
     minPoseDetectionConfidence: 0.5,
     minPosePresenceConfidence: 0.5,
     minTrackingConfidence: 0.5,
   });
 
+  let landmarker: PoseLandmarker;
+  let delegate: 'GPU' | 'CPU';
+  try {
+    landmarker = await PoseLandmarker.createFromOptions(fileset, opts('GPU'));
+    delegate = 'GPU';
+  } catch {
+    landmarker = await PoseLandmarker.createFromOptions(fileset, opts('CPU'));
+    delegate = 'CPU';
+  }
+
   // Wait until the video element has real frame data and dimensions.
-  // Calling detectForVideo before this gives 'index out of bounds' from WASM.
   if (video.readyState < 2 || video.videoWidth === 0) {
     await new Promise<void>((resolve) => {
       const ok = () => {
@@ -83,15 +90,16 @@ export async function startVision(
     if (video.readyState < 2 || video.videoWidth === 0) return;
 
     const tsMs = performance.now();
-    // Timestamps must be strictly monotonic in VIDEO mode.
     if (tsMs <= lastTimestamp) return;
     lastTimestamp = tsMs;
 
     inFlight = true;
     try {
+      const t0 = performance.now();
       const result = landmarker.detectForVideo(video, tsMs);
+      const processingMs = performance.now() - t0;
       const world = result.worldLandmarks?.[0];
-      const screen = result.landmarks?.[0]; // image-normalized, has `visibility`
+      const screen = result.landmarks?.[0];
       if (world && screen) {
         onFrame({
           leftShoulder: toVec(world[LM.LEFT_SHOULDER]),
@@ -101,6 +109,7 @@ export async function startVision(
           leftWristVisible: (screen[LM.LEFT_WRIST].visibility ?? 0) > MIN_VISIBILITY,
           rightWristVisible: (screen[LM.RIGHT_WRIST].visibility ?? 0) > MIN_VISIBILITY,
           timeSec: tsMs / 1000,
+          processingMs,
         });
       }
     } catch (err) {
@@ -111,10 +120,13 @@ export async function startVision(
   };
   tick();
 
-  return () => {
-    stopped = true;
-    stream.getTracks().forEach((t) => t.stop());
-    landmarker.close();
+  return {
+    stop: () => {
+      stopped = true;
+      stream.getTracks().forEach((t) => t.stop());
+      landmarker.close();
+    },
+    delegate,
   };
 }
 
