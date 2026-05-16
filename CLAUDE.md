@@ -25,7 +25,7 @@ CSV strings, one per WebSocket message. Sensor-type prefixes match the Android `
 | 10  | linear acceleration| `10,t,x,y,z` (m/s²)      |
 | cal | calibrate trigger  | `cal,t`                  |
 
-`t` is a nanosecond timestamp from the platform sensor stack. Acceleration is currently ignored by the client (vision provides position).
+`t` is a nanosecond timestamp from the platform sensor stack. Acceleration drives audio (swing trigger) and high-rate position prediction between vision frames (see `fusion.integrateAccel`).
 
 Defined in `protocol/src/index.ts` (and mirrored in `phone/protocol.ts`).
 
@@ -46,10 +46,11 @@ Individual scripts: `npm run server`, `npm run client`, `npm run phone`. Open ht
 
 ## Client behavior
 
-Sensor split: **IMU does orientation, vision does position.** No double-integration of accelerometer.
+Sensor split: **IMU does orientation; vision provides the absolute position target; accel does high-rate prediction between vision frames.**
 
 - **Orientation**: from the phone IMU. Two-pose calibration solves a rotation `R` that maps the IMU's gravity-aligned-but-arbitrary-yaw world frame into the scene frame, and we render `saber.quaternion = R · q_imu_current` directly — no post-mirror. The "mirror match" (phone tilted to your left appears on the visual right, matching the X-flipped webcam preview) is baked into `R` itself by aiming Pose B at `-Z_scene` (into the screen): the resulting `SCENE_UP × SCENE_AWAY = -X` flips the lateral basis vector without inverting roll chirality the way a quaternion mirror would. See the header comment in `client/src/fusion.ts` for the full derivation.
 - **Position**: from MediaPipe Pose `worldLandmarks` (metres, hip-centre origin). The two-handed grip means both wrists co-locate the phone — we take their midpoint, re-express in shoulder-centred coordinates, clamp inside the calibrated arm-reach sphere, then apply `POS_GAIN` to X/Y (wrist motion is smaller than feels saber-sized) and amplify Z deviation from a calibrated rest using the stab calibration. One-Euro on the final scene-frame position. Computed in `Fusion.updatePosition`. If both wrists drop below visibility threshold the previous position is held.
+- **High-rate prediction** (`Fusion.integrateAccel`): vision arrives at ~30 Hz but the IMU's linear-accel channel at ~50–100 Hz. Between vision frames the phone-frame accel is rotated to the scene frame via `alignment · q_imu` (no extra X-flip — the mirror is in the alignment basis), then the same per-axis gains the position pipeline applies (`POS_GAIN` for X/Y, `zGain` for Z) are applied so units match. Integration is straight kinematics: `p += v·dt + ½·a·dt²`, `v += a·dt`. Each vision frame is a correction step: blend toward the vision target at `VISION_CORRECTION_GAIN`, damp velocity by `VELOCITY_DAMP_ON_VISION` to bleed off integration error. If we've wandered > `SNAP_DISTANCE_M` from vision the prediction is snap-reset. If no vision frame arrives for `VISION_TIMEOUT_S`, velocity is zeroed so accel noise can't accumulate into runaway drift.
 - **Coordinate frames**: MediaPipe world frame (+X subject-left, +Y down, +Z away-from-camera) → three.js scene frame (+X right, +Y up, +Z toward camera). X and Y are negated (the X negation mirrors movement to match the horizontally-flipped webcam preview). Z is negated *then re-negated* in the final position formula so a forward stab moves the saber to `-Z_scene` — away from the THREE camera, into the screen — matching the calibrated blade direction.
 - **Calibration**: triggered by phone volume-down (`cal` frame over WebSocket) or by pressing `c`/`Space` in the viewer. Four-press flow: (1) idle → start, (2) saber UP, (3) saber FORWARD into the screen (records rest grip Z + arm reach + IMU pose A), (4) saber STAB at full forward extension (records stab grip Z). The two IMU poses give the IMU-world→scene rotation; the rest/stab Z pair gives the Z gain that turns a small wrist thrust into a meaningful saber stab.
 - **Asset path**: GLB lives in `client/public/lightsaber.glb` and is served at `/lightsaber.glb`.

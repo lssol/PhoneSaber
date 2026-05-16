@@ -42,6 +42,7 @@ connectSensors(WS_URL, {
   onAcceleration: (f) => {
     stats.acc++;
     maybeTriggerSwing(Math.hypot(f.x, f.y, f.z));
+    fusion.integrateAccel(f.x, f.y, f.z, imuQuat, performance.now() / 1000);
   },
   onCalibrate: doCalibrate,
 });

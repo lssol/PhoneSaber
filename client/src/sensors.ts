@@ -5,8 +5,8 @@ import { decode, type AccelerationFrame, type RotationFrame } from '@phonesaber/
 
 export type SensorHandlers = {
   onRotation?: (frame: RotationFrame) => void;
-  // Acceleration isn't used for position any more (vision handles that),
-  // but it still drives the audio module (swing trigger, hum intensity).
+  // Acceleration drives high-rate position prediction between vision frames
+  // (see fusion.integrateAccel) and the audio module (swing trigger).
   onAcceleration?: (frame: AccelerationFrame) => void;
   onCalibrate?: () => void;
   onState?: (state: string) => void;

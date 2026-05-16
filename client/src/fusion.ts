@@ -51,6 +51,24 @@
 //   • POS_GAIN amplifies X/Y so wrist motion fills a saber-sized workspace.
 //   • A calibrated rest-Z / stab-Z pair turns a real ~15–20 cm wrist thrust
 //     into Z_STAB_TARGET of scene-Z travel.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// High-rate prediction (IMU-aided dead reckoning between vision frames)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Vision arrives at ~30 Hz, the IMU's linear-accel channel at ~50–100 Hz.
+// `integrateAccel` rotates phone-frame accel into the scene frame via
+// `alignment · q_imu` (no extra X-flip — the mirror is already in the
+// alignment basis, see above) and integrates p += v·dt + ½·a·dt², v += a·dt
+// at IMU rate. The same POS_GAIN / zGain that `updatePosition` applies to
+// the vision target also apply to the rotated accel so the units match.
+//
+// Each vision frame is a correction step: blend the dead-reckoned position
+// toward the vision target by `VISION_CORRECTION_GAIN`, damp velocity by
+// `VELOCITY_DAMP_ON_VISION` to bleed off integration error. If the predicted
+// position has wandered more than `SNAP_DISTANCE_M` from vision (bootstrap,
+// vision recovery), snap. If vision drops out for `VISION_TIMEOUT_S`,
+// velocity is zeroed so accel noise can't accumulate into runaway drift.
 
 import * as THREE from 'three';
 import type { BodyFrame, Vec3 } from './vision';
@@ -68,6 +86,13 @@ const Z_STAB_TARGET = 0.6;
 // Minimum measured stab range (m) before we trust the calibration. Below this
 // the user probably didn't move during the stab capture; fall back to POS_GAIN.
 const Z_STAB_MIN = 0.05;
+
+// IMU-aided dead reckoning.
+const MAX_DEAD_RECKON_DT = 0.05;
+const VISION_TIMEOUT_S = 0.2;
+const VISION_CORRECTION_GAIN = 0.35;
+const VELOCITY_DAMP_ON_VISION = 0.6;
+const SNAP_DISTANCE_M = 0.3;
 
 // Phone-frame blade axis. (Top of phone, where the blade "emerges" from the
 // hilt-shaped phone.) Both Android and iOS use the same convention here.
@@ -105,6 +130,9 @@ export class Fusion {
   stage: CalibrationStage = 'idle';
 
   private readonly posFilter = new OneEuroVec3(POS_MIN_CUTOFF, POS_BETA);
+  private readonly velocity = new THREE.Vector3();
+  private lastAccelTime: number | null = null;
+  private lastVisionTime = -Infinity;
   private imuPoseA: THREE.Quaternion | null = null;
   private pending: { alignment: THREE.Quaternion; armLength: number; restZ: number } | null = null;
 
@@ -145,6 +173,9 @@ export class Fusion {
         this.pending = null;
         this.imuPoseA = null;
         this.posFilter.reset();
+        this.velocity.set(0, 0, 0);
+        this.lastAccelTime = null;
+        this.lastVisionTime = -Infinity;
         this.stage = 'ready';
         return this.stage;
       }
@@ -187,12 +218,73 @@ export class Fusion {
     // the saber to -Z_scene on a forward stab — into the screen, matching the
     // blade direction (see the header note on the basis-flip mirror).
     const rawSceneZ = -local.z;
-    const stabRange = this.calibration.stabZ - this.calibration.restZ;
-    const zGain = Math.abs(stabRange) >= Z_STAB_MIN ? Z_STAB_TARGET / stabRange : POS_GAIN;
-    const sceneZ = -(rawSceneZ - this.calibration.restZ) * zGain;
+    const sceneZ = -(rawSceneZ - this.calibration.restZ) * this.zGain();
 
-    const [sx, sy, sz] = this.posFilter.filter(sceneX, sceneY, sceneZ, body.timeSec);
-    this.position.set(sx, sy, sz);
+    const [tx, ty, tz] = this.posFilter.filter(sceneX, sceneY, sceneZ, body.timeSec);
+
+    this.lastVisionTime = body.timeSec;
+
+    // Pre-calibration the alignment isn't solved, so accel can't be rotated
+    // into the scene frame — vision is authoritative.
+    if (this.stage !== 'ready') {
+      this.position.set(tx, ty, tz);
+      this.velocity.set(0, 0, 0);
+      return;
+    }
+
+    // Correction: snap if we're way off (bootstrap / vision recovery),
+    // otherwise blend the dead-reckoned estimate toward the vision target
+    // and bleed off integrated-velocity error.
+    const dx = tx - this.position.x;
+    const dy = ty - this.position.y;
+    const dz = tz - this.position.z;
+    if (dx * dx + dy * dy + dz * dz > SNAP_DISTANCE_M * SNAP_DISTANCE_M) {
+      this.position.set(tx, ty, tz);
+      this.velocity.set(0, 0, 0);
+    } else {
+      this.position.x += VISION_CORRECTION_GAIN * dx;
+      this.position.y += VISION_CORRECTION_GAIN * dy;
+      this.position.z += VISION_CORRECTION_GAIN * dz;
+      this.velocity.multiplyScalar(VELOCITY_DAMP_ON_VISION);
+    }
+  }
+
+  // High-rate prediction step. Called from the accel callback (~50–100 Hz).
+  // Phone-frame accel → scene frame via `alignment · q_imu` — the basis flip
+  // in solveAlignment bakes the X-mirror in, so no extra sign flip is needed.
+  // POS_GAIN / zGain are applied to match `updatePosition`'s scene-frame units.
+  integrateAccel(ax: number, ay: number, az: number, imu: THREE.Quaternion, timeSec: number) {
+    if (this.stage !== 'ready') return;
+    if (this.lastAccelTime === null) { this.lastAccelTime = timeSec; return; }
+
+    const dt = Math.min(timeSec - this.lastAccelTime, MAX_DEAD_RECKON_DT);
+    this.lastAccelTime = timeSec;
+    if (dt <= 0) return;
+
+    if (timeSec - this.lastVisionTime > VISION_TIMEOUT_S) {
+      this.velocity.set(0, 0, 0);
+      return;
+    }
+
+    const a = new THREE.Vector3(ax, ay, az)
+      .applyQuaternion(imu)
+      .applyQuaternion(this.calibration.alignment);
+    // Match position's per-axis gain so integration units agree. The outer
+    // negation in `sceneZ = -(rawSceneZ - restZ) * zGain` and the negation
+    // inside `rawSceneZ = -local.z` cancel in the second derivative, leaving
+    // a clean positive zGain for accel-Z too.
+    a.x *= POS_GAIN;
+    a.y *= POS_GAIN;
+    a.z *= this.zGain();
+
+    this.position.addScaledVector(this.velocity, dt);
+    this.position.addScaledVector(a, 0.5 * dt * dt);
+    this.velocity.addScaledVector(a, dt);
+  }
+
+  private zGain(): number {
+    const stabRange = this.calibration.stabZ - this.calibration.restZ;
+    return Math.abs(stabRange) >= Z_STAB_MIN ? Z_STAB_TARGET / stabRange : POS_GAIN;
   }
 }
 
