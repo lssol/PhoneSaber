@@ -1,0 +1,19 @@
+{
+  "expo": {
+    "name": "PhoneSaber",
+    "slug": "phonesaber",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSMotionUsageDescription": "PhoneSaber reads motion sensors to drive the on-screen lightsaber."
+      },
+      "bundleIdentifier": "dev.phonesaber.app"
+    },
+    "android": {
+      "package": "dev.phonesaber.app"
+    }
+  }
+}
