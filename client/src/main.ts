@@ -131,7 +131,12 @@ function animate(now: number) {
   }
 
   fusion.updateOrientation(imuQuat);
-  saber.position.copy(fusion.position);
+  // Extrapolate position from the last accel tick to "now" using the current
+  // velocity. Smooths the gap between IMU updates (~50–100 Hz) and render
+  // frames (60+ Hz) so the saber glides instead of stair-stepping. `now` is
+  // a rAF timestamp on the same `performance.now()` clock that integrateAccel
+  // records `lastAccelTime` from — units must match.
+  fusion.positionAt(now / 1000, saber.position);
   saber.quaternion.copy(fusion.orientation);
   updateSaberTrail(now);
   render();

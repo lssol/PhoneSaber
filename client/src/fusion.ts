@@ -77,15 +77,15 @@ import * as THREE from 'three';
 import type { BodyFrame, Vec3 } from './vision';
 import { OneEuroVec3 } from './filter';
 
-const POS_MIN_CUTOFF = 1.8;
-const POS_BETA = 0.03;
+const POS_MIN_CUTOFF = 2.0;
+const POS_BETA = 0.09;
 
 // Gain applied to shoulder-relative grip position on *all three axes*. Wrist
 // motion is smaller than what feels like a "saber-sized" workspace, so we
 // amplify — and we apply the same factor to Z so depth feels proportionate
 // to lateral motion (rather than the asymmetric per-axis stab amplification
 // the previous design used).
-const POS_GAIN = 2.8;
+const POS_GAIN = 2.6
 
 // IMU-aided dead reckoning.
 const MAX_DEAD_RECKON_DT = 0.05;
@@ -93,6 +93,11 @@ const VISION_TIMEOUT_S = 0.2;
 const VISION_CORRECTION_GAIN = 0.35;
 const VELOCITY_DAMP_ON_VISION = 0.6;
 const SNAP_DISTANCE_M = 0.3;
+// Hard cap on render-time extrapolation. If accel stops streaming we don't
+// want the saber to keep flying along the last velocity — clamp to roughly
+// one accel period (~20 ms) so a stale velocity can move the hilt at most a
+// couple of cm before the next IMU sample lands.
+const MAX_RENDER_EXTRAPOLATE_DT = 0.025;
 
 // Phone-frame blade axis. (Top of phone, where the blade "emerges" from the
 // hilt-shaped phone.) Both Android and iOS use the same convention here.
@@ -265,6 +270,21 @@ export class Fusion {
     this.position.addScaledVector(this.velocity, dt);
     this.position.addScaledVector(a, 0.5 * dt * dt);
     this.velocity.addScaledVector(a, dt);
+  }
+
+  // Render-time read of position. The IMU integrator runs at ~50–100 Hz but
+  // the render loop runs faster (60+ Hz on a typical display, higher on
+  // 120 Hz screens), so between accel ticks `this.position` is stale for a
+  // few ms. Projecting it forward by `velocity * (now − lastAccelTime)` lets
+  // the render frames glide between integrator updates instead of stair-
+  // stepping. Capped by MAX_RENDER_EXTRAPOLATE_DT so a stalled accel feed
+  // can't drag the saber off into space along the last velocity.
+  positionAt(timeSec: number, out: THREE.Vector3): THREE.Vector3 {
+    out.copy(this.position);
+    if (this.stage !== 'ready' || this.lastAccelTime === null) return out;
+    const dt = Math.min(timeSec - this.lastAccelTime, MAX_RENDER_EXTRAPOLATE_DT);
+    if (dt <= 0) return out;
+    return out.addScaledVector(this.velocity, dt);
   }
 }
 

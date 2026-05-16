@@ -16,10 +16,10 @@ export type SaberTrail = {
 };
 
 const MAX_SAMPLES = 32;
-const TRAIL_FADE_MS = 190;
+const TRAIL_FADE_MS = 210;
 const MIN_TRANSLATION_DELTA_M = 0.0015;
 const MIN_ROTATION_DELTA_RAD = 0.0015;
-const START_OPACITY = 0.2;
+const START_OPACITY = 0.25;
 const TRAIL_COLOR = 0x36a3ff;
 
 export function createSaberTrail(

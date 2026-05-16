@@ -33,7 +33,7 @@ export async function startVision(
   onFrame: (frame: BodyFrame) => void,
 ): Promise<{ stop: () => void; delegate: string }> {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: 320, height: 240, facingMode: 'user' },
+    video: { width: 640, height: 480, facingMode: 'user' },
     audio: false,
   });
   video.srcObject = stream;
