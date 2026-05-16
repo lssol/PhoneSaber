@@ -2,12 +2,22 @@ import { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, TextInput, Pressable } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as SensorFusion from './modules/sensor-fusion';
+import { encode } from './protocol';
+
+const SAMPLE_INTERVAL_MICROS = 20000; // ~50 Hz
+
+type ConnectionStatus =
+  | { kind: 'idle' }
+  | { kind: 'connecting' }
+  | { kind: 'streaming' }
+  | { kind: 'disconnected' }
+  | { kind: 'error'; message: string };
 
 export default function App() {
   const [url, setUrl] = useState('ws://192.168.1.10:8080');
-  const [status, setStatus] = useState('idle');
+  const [status, setStatus] = useState<ConnectionStatus>({ kind: 'idle' });
   const [rate, setRate] = useState(0);
-  const wsRef = useRef(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const sentRef = useRef(0);
   const runningRef = useRef(false);
 
@@ -22,35 +32,41 @@ export default function App() {
   useEffect(() => {
     const subR = SensorFusion.onRotation((e) => {
       const ws = wsRef.current;
-      if (ws && ws.readyState === 1) {
-        ws.send(`15,${e.t},${e.x},${e.y},${e.z},${e.w}`);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(encode({ kind: 'rotation', t: e.t, x: e.x, y: e.y, z: e.z, w: e.w }));
         sentRef.current++;
       }
     });
     const subA = SensorFusion.onAcceleration((e) => {
       const ws = wsRef.current;
-      if (ws && ws.readyState === 1) {
-        ws.send(`10,${e.t},${e.x},${e.y},${e.z}`);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(encode({ kind: 'acceleration', t: e.t, x: e.x, y: e.y, z: e.z }));
         sentRef.current++;
       }
     });
-    return () => { subR.remove(); subA.remove(); };
+    return () => {
+      subR.remove();
+      subA.remove();
+    };
   }, []);
 
   const start = () => {
     if (runningRef.current) return;
     runningRef.current = true;
-    setStatus('connecting');
+    setStatus({ kind: 'connecting' });
     const ws = new WebSocket(url);
     wsRef.current = ws;
     ws.onopen = () => {
-      setStatus('streaming');
-      SensorFusion.start(20000); // ~50 Hz
+      setStatus({ kind: 'streaming' });
+      SensorFusion.start(SAMPLE_INTERVAL_MICROS);
     };
-    ws.onerror = (e) => setStatus('error: ' + (e?.message ?? 'unknown'));
+    ws.onerror = (e) => {
+      const message = (e as { message?: string }).message ?? 'unknown';
+      setStatus({ kind: 'error', message });
+    };
     ws.onclose = () => {
       SensorFusion.stop();
-      setStatus('disconnected');
+      setStatus({ kind: 'disconnected' });
       runningRef.current = false;
     };
   };
@@ -84,10 +100,25 @@ export default function App() {
           <Text style={styles.btnText}>Stop</Text>
         </Pressable>
       </View>
-      <Text style={styles.status}>{status}</Text>
+      <Text style={styles.status}>{renderStatus(status)}</Text>
       <Text style={styles.rate}>{rate.toFixed(0)} msg/s</Text>
     </View>
   );
+}
+
+function renderStatus(status: ConnectionStatus): string {
+  switch (status.kind) {
+    case 'idle':
+      return 'idle';
+    case 'connecting':
+      return 'connecting';
+    case 'streaming':
+      return 'streaming';
+    case 'disconnected':
+      return 'disconnected';
+    case 'error':
+      return `error: ${status.message}`;
+  }
 }
 
 const styles = StyleSheet.create({

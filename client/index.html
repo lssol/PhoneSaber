@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>PhoneSaber</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+      canvas { display: block; }
+      #hud {
+        position: fixed; top: 8px; left: 8px;
+        font: 12px/1.4 ui-monospace, Menlo, monospace;
+        color: #6f6; background: rgba(0,0,0,0.4); padding: 6px 8px;
+        border-radius: 4px; pointer-events: none; white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud">connecting…</div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

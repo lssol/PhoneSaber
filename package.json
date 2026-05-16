@@ -3,13 +3,19 @@
   "version": "1.0.0",
   "private": true,
   "description": "Drive a 3D lightsaber with your phone's fused motion sensors.",
+  "workspaces": [
+    "protocol",
+    "server",
+    "client"
+  ],
   "scripts": {
-    "install:all": "npm install && npm install --prefix server && npm install --prefix client && npm install --prefix phone",
-    "server": "npm --prefix server start",
-    "client": "npm --prefix client start",
+    "install:all": "npm install && npm install --prefix phone",
+    "server": "npm run dev --workspace @phonesaber/server",
+    "client": "npm run dev --workspace @phonesaber/client",
     "phone": "npm --prefix phone start",
     "dev": "concurrently -n server,client,phone -c green,cyan,magenta \"npm:server\" \"npm:client\" \"npm:phone\"",
-    "build:phone": "cd phone && eas build --platform android --profile development --non-interactive"
+    "build:phone": "cd phone && eas build --platform android --profile development --non-interactive",
+    "typecheck": "npm run typecheck --workspaces --if-present && npm --prefix phone run typecheck"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
