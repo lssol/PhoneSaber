@@ -68,9 +68,11 @@ function calibrationPrompt(): string {
     case 'idle':
       return 'Calibrate: press volume-down (or c / Space) to start.';
     case 'awaiting-up':
-      return 'Calibration 1/2: hold the saber pointing UP (toward the ceiling). Press again to capture.';
+      return 'Calibration 1/3: hold the saber pointing UP (toward the ceiling). Press to capture.';
     case 'awaiting-forward':
-      return 'Calibration 2/2: hold the saber pointing FORWARD (toward the screen). Press again to capture.';
+      return 'Calibration 2/3: hold the saber pointing FORWARD (toward the screen), arms relaxed. Press to capture.';
+    case 'awaiting-stab':
+      return 'Calibration 3/3: STAB forward (same direction, arms fully extended). Press to capture.';
     case 'ready':
       return 'Calibrated. Press volume-down to redo. R to clear.';
   }

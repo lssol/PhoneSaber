@@ -1,28 +1,56 @@
 // Fusion: phone IMU orientation + webcam-tracked body landmarks → saber pose.
 //
-// Orientation: single-pose calibration only captures `imuNeutral⁻¹ · imuCurrent`,
-// which removes a resting-pose offset but doesn't anchor the IMU's world frame
-// (gravity-aligned with an arbitrary yaw reference) to the scene frame.
-// We need *two* known poses to recover the alignment.
+// ─────────────────────────────────────────────────────────────────────────────
+// Orientation (rotation that R · q_imu_current gives the saber's scene quat)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The IMU returns a gravity-aligned quaternion with an *arbitrary* yaw reference,
+// so we can't render it directly — we need a rotation R that maps the IMU's
+// world frame into the scene frame. Two known poses are enough to fix R: with
+// each pose we know the blade direction in the IMU frame (= q_imu · +Y_phone)
+// AND where we want that direction to land in the scene.
 //
 // Guided two-pose calibration:
-//   Pose A — user holds saber pointing UP    → blade should appear along +Y_scene.
-//   Pose B — user holds saber toward SCREEN  → blade should appear along +Z_scene.
+//   Pose A — saber pointing UP            → blade lands at SCENE_UP            = (0, +1,  0)
+//   Pose B — saber pointing INTO SCREEN   → blade lands at SCENE_AWAY_FROM_CAM = (0,  0, -1)
 //
-// Both Android `TYPE_GAME_ROTATION_VECTOR` and iOS `.xArbitraryCorrectedZVertical`
-// put the phone's +Y axis from the bottom of the device to the top, so we treat
-// the phone-frame "blade axis" as +Y_phone. From the two IMU samples we get two
-// world-frame vectors; a small Procrustes-style alignment yields the rotation R
-// that maps IMU-world → scene. Per frame we then render
-//     saber.quaternion = R · q_imu_current
-// (Scene's saber mesh is pre-rotated so its local +Y is the blade direction,
-//  see scene.ts.)
+// The "mirror" trick (this is the subtle part — read it once):
 //
-// Position: midpoint of the visible wrists in shoulder-centred coordinates,
-// reach-clamped, One-Euro smoothed. Map MediaPipe (+X subject-left, +Y down,
-// +Z away-from-camera) to three.js (+X right, +Y up, +Z toward camera) by
-// negating all three axes (the X negation also mirrors movement to match the
-// horizontally-flipped video preview).
+// Earlier we mapped Pose B to +Z_scene (toward the camera) and then applied a
+// post-mirror (`q.y *= -1; q.z *= -1`) on the rendered quaternion so that
+// phone-to-your-left would show up on the visual right of the screen — matching
+// the X-mirrored webcam preview. That worked for lateral tilts, but the same
+// quaternion mirror also reverses chirality of rotations around the blade
+// axis: roll felt backwards.
+//
+// The fix is to bake the mirror into the *basis*: pointing Pose B at -Z_scene
+// flips the sign of the third basis vector (`SCENE_UP × SCENE_AWAY_FROM_CAM`
+// = -X_scene instead of +X_scene). That single sign change makes phone-lateral
+// land on the mirrored side of the screen — but, crucially, it's an honest
+// rotation R, not a reflection: rotations *around* the blade axis are
+// preserved, so roll matches the user's hand. No explicit quaternion mirror.
+//
+// Per frame:  saber.quaternion = R · q_imu_current
+// (The saber mesh in scene.ts is pre-rotated so its local +Y is the blade.)
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// Position (where the saber hilt sits)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Midpoint of the visible wrists in shoulder-centred coordinates, reach-clamped
+// and One-Euro smoothed. MediaPipe world axes (+X subject-left, +Y down, +Z
+// away-from-camera) → three.js scene (+X right, +Y up, +Z toward camera) by
+// negating X and Y. Z is also negated then *re-negated* in the final formula
+// so that a forward stab in real life moves the saber to -Z_scene (away from
+// the THREE camera, deeper into the screen) — matching the blade direction
+// established at calibration. The X-mirror on position keeps the saber visually
+// aligned with the mirrored webcam preview (your reaching-right reflection is
+// on the visual left, and so is the saber).
+//
+// On top of the raw mapping:
+//   • POS_GAIN amplifies X/Y so wrist motion fills a saber-sized workspace.
+//   • A calibrated rest-Z / stab-Z pair turns a real ~15–20 cm wrist thrust
+//     into Z_STAB_TARGET of scene-Z travel.
 
 import * as THREE from 'three';
 import type { BodyFrame, Vec3 } from './vision';
@@ -31,25 +59,44 @@ import { OneEuroVec3 } from './filter';
 const POS_MIN_CUTOFF = 1.0;
 const POS_BETA = 0.02;
 
+// Lateral/vertical gain on shoulder-relative grip position. Wrist motion is
+// smaller than what feels like a "saber-sized" workspace, so we amplify.
+const POS_GAIN = 1.7;
+
+// Scene-Z travel the saber should cover from rest pose to a full stab.
+const Z_STAB_TARGET = 0.6;
+// Minimum measured stab range (m) before we trust the calibration. Below this
+// the user probably didn't move during the stab capture; fall back to POS_GAIN.
+const Z_STAB_MIN = 0.05;
+
 // Phone-frame blade axis. (Top of phone, where the blade "emerges" from the
 // hilt-shaped phone.) Both Android and iOS use the same convention here.
 const PROBE_BLADE_PHONE = new THREE.Vector3(0, 1, 0);
 
-// Scene-frame targets for the two calibration poses.
+// Scene-frame targets for the two orientation calibration poses.
 const SCENE_UP = new THREE.Vector3(0, 1, 0);
-const SCENE_TOWARD_CAMERA = new THREE.Vector3(0, 0, 1);
+const SCENE_AWAY_FROM_CAMERA = new THREE.Vector3(0, 0, -1);
 
-export type CalibrationStage = 'idle' | 'awaiting-up' | 'awaiting-forward' | 'ready';
+export type CalibrationStage =
+  | 'idle'
+  | 'awaiting-up'
+  | 'awaiting-forward'
+  | 'awaiting-stab'
+  | 'ready';
 
 export type Calibration = {
   // Rotation that takes IMU-world frame vectors into scene frame.
   alignment: THREE.Quaternion;
   // Arm reach measured at calibration time (shoulder→wrist). Used for clamping.
   armLength: number;
+  // Grip scene-Z at the forward pose — the rest pose for stabbing.
+  restZ: number;
+  // Grip scene-Z at the stab pose — full forward extension.
+  stabZ: number;
 };
 
 export function defaultCalibration(): Calibration {
-  return { alignment: new THREE.Quaternion(), armLength: 0.65 };
+  return { alignment: new THREE.Quaternion(), armLength: 0.65, restZ: 0, stabZ: 0 };
 }
 
 export class Fusion {
@@ -59,67 +106,69 @@ export class Fusion {
 
   private readonly posFilter = new OneEuroVec3(POS_MIN_CUTOFF, POS_BETA);
   private imuPoseA: THREE.Quaternion | null = null;
-  private armLengthAtCapture = 0.65;
+  private pending: { alignment: THREE.Quaternion; armLength: number; restZ: number } | null = null;
 
   constructor(public calibration: Calibration = defaultCalibration()) {}
 
-  // Cycle through the calibration state machine. Each call captures the
-  // current IMU pose for whichever step we're on. After the second pose,
-  // stage becomes 'ready' and the alignment is committed.
+  // Cycle through the calibration state machine. Each call advances one step:
+  //   idle → awaiting-up → awaiting-forward → awaiting-stab → ready
+  // The press in 'idle' is a no-op capture — it just unlocks the prompt for the
+  // first real pose. Each subsequent press captures the relevant IMU / body
+  // sample.
   capturePose(imu: THREE.Quaternion, body: BodyFrame | null): CalibrationStage {
-    if (this.stage !== 'awaiting-forward') {
-      // 'idle' / 'ready' / 'awaiting-up' all (re)start with pose A.
-      this.imuPoseA = imu.clone();
-      if (body) this.armLengthAtCapture = measureArm(body);
-      this.stage = 'awaiting-forward';
-      return this.stage;
-    }
+    switch (this.stage) {
+      case 'idle':
+      case 'ready':
+        this.imuPoseA = null;
+        this.pending = null;
+        this.stage = 'awaiting-up';
+        return this.stage;
 
-    // Pose B → solve alignment.
-    const imuPoseB = imu.clone();
-    const alignment = solveAlignment(this.imuPoseA!, imuPoseB);
-    this.calibration = { alignment, armLength: this.armLengthAtCapture };
-    this.posFilter.reset();
-    this.stage = 'ready';
-    return this.stage;
+      case 'awaiting-up':
+        this.imuPoseA = imu.clone();
+        this.stage = 'awaiting-forward';
+        return this.stage;
+
+      case 'awaiting-forward': {
+        const alignment = solveAlignment(this.imuPoseA!, imu);
+        const armLength = body ? measureArm(body) : this.calibration.armLength;
+        const restZ = body ? gripSceneZ(body) : 0;
+        this.pending = { alignment, armLength, restZ };
+        this.stage = 'awaiting-stab';
+        return this.stage;
+      }
+
+      case 'awaiting-stab': {
+        const stabZ = body ? gripSceneZ(body) : (this.pending?.restZ ?? 0) + Z_STAB_TARGET;
+        const { alignment, armLength, restZ } = this.pending!;
+        this.calibration = { alignment, armLength, restZ, stabZ };
+        this.pending = null;
+        this.imuPoseA = null;
+        this.posFilter.reset();
+        this.stage = 'ready';
+        return this.stage;
+      }
+    }
   }
 
   resetCalibration() {
     this.imuPoseA = null;
+    this.pending = null;
     this.stage = 'idle';
   }
 
   updateOrientation(imu: THREE.Quaternion) {
+    // Orientation is taken directly from IMU + alignment. No mirror: the
+    // saber blade points in the same direction as the phone's top, so
+    // rolling the phone rolls the saber the same way. Position is still
+    // X-mirrored to match the flipped webcam preview, so when you reach
+    // sideways the saber follows your reflection — only rotation is direct.
     this.orientation.multiplyQuaternions(this.calibration.alignment, imu);
-    // Mirror the rotation across the YZ plane to match the X-mirrored
-    // position (so a CCW twist by the user appears CCW on the mirrored
-    // screen). Mirroring a quaternion across X=0 negates qy and qz —
-    // rotations around X are unchanged, but rotations involving Y or Z
-    // flip chirality. Blade direction (in YZ plane at calibration poses)
-    // is unaffected; only the "spin around the blade axis" flips.
-    this.orientation.y = -this.orientation.y;
-    this.orientation.z = -this.orientation.z;
   }
 
   updatePosition(body: BodyFrame) {
-    const shoulderMid = midpoint(body.leftShoulder, body.rightShoulder);
-
-    let gripWorld: Vec3;
-    if (body.leftWristVisible && body.rightWristVisible) {
-      gripWorld = midpoint(body.leftWrist, body.rightWrist);
-    } else if (body.leftWristVisible) {
-      gripWorld = body.leftWrist;
-    } else if (body.rightWristVisible) {
-      gripWorld = body.rightWrist;
-    } else {
-      return;
-    }
-
-    const local: Vec3 = {
-      x: gripWorld.x - shoulderMid.x,
-      y: gripWorld.y - shoulderMid.y,
-      z: gripWorld.z - shoulderMid.z,
-    };
+    const local = gripShoulderLocal(body);
+    if (!local) return;
 
     const reach = this.calibration.armLength;
     const d = Math.hypot(local.x, local.y, local.z);
@@ -129,13 +178,50 @@ export class Fusion {
     }
 
     // MediaPipe → three.js axes (+ X-mirror to match the flipped preview).
-    const sceneX = -local.x;
-    const sceneY = -local.y;
-    const sceneZ = -local.z;
+    // X/Y: uniform gain so the workspace feels bigger than raw wrist motion.
+    const sceneX = -local.x * POS_GAIN;
+    const sceneY = -local.y * POS_GAIN;
+
+    // Z: amplify deviation from the calibrated rest forward pose so a ~15–20 cm
+    // wrist stab reads as a meaningful saber thrust. The final negation sends
+    // the saber to -Z_scene on a forward stab — into the screen, matching the
+    // blade direction (see the header note on the basis-flip mirror).
+    const rawSceneZ = -local.z;
+    const stabRange = this.calibration.stabZ - this.calibration.restZ;
+    const zGain = Math.abs(stabRange) >= Z_STAB_MIN ? Z_STAB_TARGET / stabRange : POS_GAIN;
+    const sceneZ = -(rawSceneZ - this.calibration.restZ) * zGain;
 
     const [sx, sy, sz] = this.posFilter.filter(sceneX, sceneY, sceneZ, body.timeSec);
     this.position.set(sx, sy, sz);
   }
+}
+
+// Shoulder-relative grip position in MediaPipe world axes. Returns null if no
+// wrist is visible.
+function gripShoulderLocal(body: BodyFrame): Vec3 | null {
+  let gripWorld: Vec3;
+  if (body.leftWristVisible && body.rightWristVisible) {
+    gripWorld = midpoint(body.leftWrist, body.rightWrist);
+  } else if (body.leftWristVisible) {
+    gripWorld = body.leftWrist;
+  } else if (body.rightWristVisible) {
+    gripWorld = body.rightWrist;
+  } else {
+    return null;
+  }
+  const shoulderMid = midpoint(body.leftShoulder, body.rightShoulder);
+  return {
+    x: gripWorld.x - shoulderMid.x,
+    y: gripWorld.y - shoulderMid.y,
+    z: gripWorld.z - shoulderMid.z,
+  };
+}
+
+// Grip Z in the scene frame (toward camera = +Z), matching what updatePosition
+// would compute pre-gain. Used at calibration time to record the rest/stab Z.
+function gripSceneZ(body: BodyFrame): number {
+  const local = gripShoulderLocal(body);
+  return local ? -local.z : 0;
 }
 
 // Solve for the rotation that maps the IMU-world frame to the scene frame
@@ -156,7 +242,7 @@ function solveAlignment(imuA: THREE.Quaternion, imuB: THREE.Quaternion): THREE.Q
   const u3 = new THREE.Vector3().crossVectors(u1, u2);
 
   const w1 = SCENE_UP.clone();
-  const w2 = SCENE_TOWARD_CAMERA.clone(); // already ⟂ to SCENE_UP
+  const w2 = SCENE_AWAY_FROM_CAMERA.clone(); // already ⟂ to SCENE_UP
   const w3 = new THREE.Vector3().crossVectors(w1, w2);
 
   const W = new THREE.Matrix4().makeBasis(w1, w2, w3);

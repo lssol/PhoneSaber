@@ -30,13 +30,14 @@ export function createScene(): Scene {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000000);
 
-  // Body at origin; the saber hilt orbits within ~0.65 m and its tip extends
-  // another ~1 m. Worst case (saber up, arm extended) the tip reaches ~1.65 m
-  // above origin, so the camera needs to fit that *plus* full side-to-side
-  // swings. Camera aimed slightly above origin since the action lives there.
+  // Body at origin; the saber hilt orbits within ~1.1 m (arm reach × position
+  // gain) and stabs add another ~0.6 m of forward travel before the blade
+  // tip extends a further ~1 m. Camera pulled back enough to fit both a
+  // fully-stabbed tip in Z and a saber-up tip in Y, aimed slightly above
+  // origin since the action lives there.
   const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 100);
-  camera.position.set(0, 0.3, 2.2);
-  camera.lookAt(0, 0.5, 0);
+  camera.position.set(0, 0.3, 3.2);
+  camera.lookAt(0, 0.6, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(window.innerWidth, window.innerHeight);
