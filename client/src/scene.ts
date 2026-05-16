@@ -15,6 +15,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { createSaberTrail, type SaberTrail } from './saberTrail';
+import { createSaberModel, isBladeMaterial, SABER_URL } from './saberModel';
 
 export type Scene = {
   scene: THREE.Scene;
@@ -25,11 +26,7 @@ export type Scene = {
   render: () => void;
 };
 
-const SABER_URL = '/lightsaber.glb';
-const SABER_LENGTH = 1.0;
-const BLADE_COLOR = 0x36a3ff;
-
-export function createScene(): Scene {
+export function createScene(container: HTMLElement = document.body): Scene {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x000000);
 
@@ -38,19 +35,25 @@ export function createScene(): Scene {
   // tip extends a further ~1 m. Camera pulled back enough to fit both a
   // fully-stabbed tip in Z and a saber-up tip in Y, aimed slightly above
   // origin since the action lives there.
-  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.01, 100);
+  const bounds = container.getBoundingClientRect();
+  const width = bounds.width || window.innerWidth;
+  const height = bounds.height || window.innerHeight;
+  const camera = new THREE.PerspectiveCamera(55, width / height, 0.01, 100);
   camera.position.set(0, 0.3, 3.2);
   camera.lookAt(0, 0.6, 0);
 
   const renderer = new THREE.WebGLRenderer({ antialias: true });
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(width, height);
   renderer.setPixelRatio(window.devicePixelRatio);
-  document.body.appendChild(renderer.domElement);
+  container.appendChild(renderer.domElement);
 
   window.addEventListener('resize', () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
+    const nextBounds = container.getBoundingClientRect();
+    const nextWidth = nextBounds.width || window.innerWidth;
+    const nextHeight = nextBounds.height || window.innerHeight;
+    camera.aspect = nextWidth / nextHeight;
     camera.updateProjectionMatrix();
-    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setSize(nextWidth, nextHeight);
   });
 
   scene.add(new THREE.AmbientLight(0xffffff, 1.0));
@@ -66,9 +69,7 @@ export function createScene(): Scene {
   new GLTFLoader().load(
     SABER_URL,
     (gltf) => {
-      const mesh = gltf.scene.children[1] ?? gltf.scene.children[0];
-      normalizeSaberMesh(mesh);
-      tintExistingBlade(mesh);
+      const mesh = createSaberModel(gltf.scene);
       saber.add(mesh);
       trail = createSaberTrail(scene, mesh, isBladeMaterial);
     },
@@ -84,58 +85,4 @@ export function createScene(): Scene {
     updateSaberTrail: (nowMs) => trail?.update(nowMs),
     render: () => renderer.render(scene, camera),
   };
-}
-
-function normalizeSaberMesh(mesh: THREE.Object3D): void {
-  const box = new THREE.Box3().setFromObject(mesh);
-  const size = new THREE.Vector3();
-  box.getSize(size);
-
-  // Identify which mesh-local axis the blade extends along (the longest one).
-  const longest = Math.max(size.x, size.y, size.z);
-  const bladeAxis: 'x' | 'y' | 'z' =
-    size.x >= size.y && size.x >= size.z ? 'x' :
-    size.y >= size.z ? 'y' : 'z';
-
-  // Scale so the blade is ~SABER_LENGTH long. Setting scale before rotating is
-  // fine because uniform scale commutes with rotation.
-  mesh.scale.setScalar(SABER_LENGTH / longest);
-
-  // Rotate so the blade axis becomes mesh-local +Y. Rotations chosen so the
-  // chosen positive axis ends up at +Y after the transform.
-  if (bladeAxis === 'x') mesh.rotation.z = Math.PI / 2;
-  else if (bladeAxis === 'z') mesh.rotation.x = -Math.PI / 2;
-
-  // After the rotation, drop the hilt to the group origin: translate the mesh
-  // up so that its minimum Y in world space sits at y=0.
-  mesh.updateMatrixWorld();
-  const aligned = new THREE.Box3().setFromObject(mesh);
-  mesh.position.y = -aligned.min.y;
-}
-
-function tintExistingBlade(root: THREE.Object3D): void {
-  root.traverse((child) => {
-    if (!(child instanceof THREE.Mesh)) return;
-
-    const materials = Array.isArray(child.material) ? child.material : [child.material];
-    for (const material of materials) {
-      if (!(material instanceof THREE.MeshStandardMaterial) && !(material instanceof THREE.MeshPhysicalMaterial)) continue;
-      if (!isBladeMaterial(material)) continue;
-
-      material.color.setHex(BLADE_COLOR);
-      material.emissive.setHex(BLADE_COLOR);
-      material.needsUpdate = true;
-    }
-  });
-}
-
-function isBladeMaterial(material: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial): boolean {
-  const name = material.name.toLowerCase();
-  const emissiveStrength =
-    material.emissive.r * material.emissive.r +
-    material.emissive.g * material.emissive.g +
-    material.emissive.b * material.emissive.b;
-  const isNamedBlade = /(blade|light|glow|emissive|laser)/.test(name);
-  const isOriginalGlowingBlade = material.transparent && emissiveStrength > 0.1 && material.metalness === 0;
-  return isNamedBlade || isOriginalGlowingBlade;
 }

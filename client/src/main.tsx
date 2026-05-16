@@ -6,18 +6,18 @@
 // Calibration also doubles as the user-gesture that unlocks Web Audio.
 
 import * as THREE from 'three';
-import { createScene } from './scene';
+import { createRoot } from 'react-dom/client';
 import { connectSensors } from './sensors';
 import { startVision, type BodyFrame } from './vision';
 import { Fusion, defaultCalibration } from './fusion';
 import { maybeTriggerSwing, startHum, unlockAudio } from './audio';
+import { PhoneSaberApp, type FrameStats } from './App';
 
 const WS_URL = `ws://${location.hostname}:8080`;
 
 const hud = document.getElementById('hud')!;
 const video = document.getElementById('cam') as HTMLVideoElement;
-
-const { saber, updateSaberTrail, render } = createScene();
+const root = document.getElementById('root')!;
 
 const imuQuat = new THREE.Quaternion(0, 0, 0, 1);
 let latestBody: BodyFrame | null = null;
@@ -30,7 +30,7 @@ const frameStats = {
   lastSampleAt: 0,
   fps: 0,
   frameMs: 0,
-};
+} satisfies FrameStats;
 const latency = {
   lastImuMs: 0,
   lastVisionMs: 0,
@@ -114,31 +114,6 @@ setInterval(() => {
   stats.vis = 0;
 }, 250);
 
-function animate(now: number) {
-  requestAnimationFrame(animate);
-
-  frameStats.frames++;
-  if (frameStats.lastSampleAt === 0) {
-    frameStats.lastSampleAt = now;
-  } else {
-    const elapsed = now - frameStats.lastSampleAt;
-    if (elapsed >= 500) {
-      frameStats.fps = (frameStats.frames * 1000) / elapsed;
-      frameStats.frameMs = elapsed / frameStats.frames;
-      frameStats.frames = 0;
-      frameStats.lastSampleAt = now;
-    }
-  }
-
-  fusion.updateOrientation(imuQuat);
-  // Extrapolate position from the last accel tick to "now" using the current
-  // velocity. Smooths the gap between IMU updates (~50–100 Hz) and render
-  // frames (60+ Hz) so the saber glides instead of stair-stepping. `now` is
-  // a rAF timestamp on the same `performance.now()` clock that integrateAccel
-  // records `lastAccelTime` from — units must match.
-  fusion.positionAt(now / 1000, saber.position);
-  saber.quaternion.copy(fusion.orientation);
-  updateSaberTrail(now);
-  render();
-}
-requestAnimationFrame(animate);
+createRoot(root).render(
+  <PhoneSaberApp fusion={fusion} imuQuat={imuQuat} frameStats={frameStats} />,
+);

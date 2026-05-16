@@ -12,9 +12,16 @@
   "dependencies": {
     "@mediapipe/tasks-vision": "^0.10.18",
     "@phonesaber/protocol": "*",
+    "@react-three/drei": "^10.7.7",
+    "@react-three/fiber": "^9.6.1",
+    "@react-three/postprocessing": "^3.0.4",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6",
     "three": "^0.170.0"
   },
   "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
     "@types/three": "^0.170.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.3"
