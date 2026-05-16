@@ -1,0 +1,17 @@
+{
+  "name": "phonesaber",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Drive a 3D lightsaber with your phone's fused motion sensors.",
+  "scripts": {
+    "install:all": "npm install && npm install --prefix server && npm install --prefix client && npm install --prefix phone",
+    "server": "npm --prefix server start",
+    "client": "npm --prefix client start",
+    "phone": "npm --prefix phone start",
+    "dev": "concurrently -n server,client,phone -c green,cyan,magenta \"npm:server\" \"npm:client\" \"npm:phone\"",
+    "build:phone": "cd phone && eas build --platform android --profile development --non-interactive"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
