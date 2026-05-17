@@ -32,10 +32,20 @@ const LM = {
   RIGHT_WRIST: 16,
   LEFT_HIP: 23,
   RIGHT_HIP: 24,
+  LEFT_KNEE: 25,
+  RIGHT_KNEE: 26,
+  LEFT_ANKLE: 27,
+  RIGHT_ANKLE: 28,
 } as const;
 const MIN_VISIBILITY = 0.3;
 
-type Point = { kind: 'lm'; idx: number } | { kind: 'mid'; a: number; b: number };
+// `world` lets a spec use a fixed scene-space position (e.g., Hips uses
+// (0,0,0)→(0,1,0) to keep its primary direction pinned to vertical so it
+// only rotates around its yaw axis from the twist landmarks).
+type Point =
+  | { kind: 'lm'; idx: number }
+  | { kind: 'mid'; a: number; b: number }
+  | { kind: 'world'; x: number; y: number; z: number };
 
 type BoneSpec = {
   bone: string;
@@ -50,8 +60,17 @@ type BoneSpec = {
 // Order matters: parents before children. Bones are updated in this order
 // so each child can read its parent's already-updated world rotation.
 const BONES: BoneSpec[] = [
+  // Hips: yaw-only. Primary axis pinned to world up; twist from hip line
+  // so the whole rig rotates around vertical when the user turns their
+  // pelvis. Tilt is left to Spine so we don't tilt the legs along with it.
+  {
+    bone: 'mixamorigHips',
+    head: world(0, 0, 0),
+    tail: world(0, 1, 0),
+    twist: { from: LM.LEFT_HIP, to: LM.RIGHT_HIP },
+  },
   // Torso: hip midpoint → shoulder midpoint. Twist from shoulder line so
-  // chest yaw (turning) follows the user's torsion.
+  // chest yaw (turning) follows the user's torsion on top of the hips.
   {
     bone: 'mixamorigSpine',
     head: mid(LM.LEFT_HIP, LM.RIGHT_HIP),
@@ -74,10 +93,19 @@ const BONES: BoneSpec[] = [
     tail: mid(LM.LEFT_EAR, LM.RIGHT_EAR),
     twist: { from: LM.LEFT_EAR, to: LM.RIGHT_EAR },
   },
+  // Legs (mirror swap). Visibility-gated: if MediaPipe can't see them
+  // (laptop camera too low, legs cropped), the bone keeps its last value
+  // instead of getting noise. 2-DOF only; knee twist isn't recoverable
+  // from landmark positions alone.
+  { bone: 'mixamorigRightUpLeg', head: lm(LM.LEFT_HIP),    tail: lm(LM.LEFT_KNEE) },
+  { bone: 'mixamorigRightLeg',   head: lm(LM.LEFT_KNEE),   tail: lm(LM.LEFT_ANKLE) },
+  { bone: 'mixamorigLeftUpLeg',  head: lm(LM.RIGHT_HIP),   tail: lm(LM.RIGHT_KNEE) },
+  { bone: 'mixamorigLeftLeg',    head: lm(LM.RIGHT_KNEE),  tail: lm(LM.RIGHT_ANKLE) },
 ];
 
 function lm(idx: number): Point { return { kind: 'lm', idx }; }
 function mid(a: number, b: number): Point { return { kind: 'mid', a, b }; }
+function world(x: number, y: number, z: number): Point { return { kind: 'world', x, y, z }; }
 
 export class ArmSolver {
   private bones = new Map<string, THREE.Bone>();
@@ -118,7 +146,7 @@ export class ArmSolver {
   }
 
   apply(worldLandmarks: Landmark[], landmarks: Landmark[], alpha = 0.3): void {
-    if (worldLandmarks.length < 25 || landmarks.length < 25) return;
+    if (worldLandmarks.length < 29 || landmarks.length < 29) return;
 
     for (const spec of BONES) {
       if (!this.visible(landmarks, spec.head) || !this.visible(landmarks, spec.tail)) continue;
@@ -149,23 +177,28 @@ export class ArmSolver {
     }
   }
 
-  private resolvePoint(world: Landmark[], p: Point, out: THREE.Vector3): void {
+  private resolvePoint(worldLm: Landmark[], p: Point, out: THREE.Vector3): void {
     if (p.kind === 'lm') {
-      const l = world[p.idx];
+      const l = worldLm[p.idx];
       out.set(-l.x, -l.y, -l.z);
-    } else {
-      const a = world[p.a];
-      const b = world[p.b];
+    } else if (p.kind === 'mid') {
+      const a = worldLm[p.a];
+      const b = worldLm[p.b];
       out.set(-(a.x + b.x) * 0.5, -(a.y + b.y) * 0.5, -(a.z + b.z) * 0.5);
+    } else {
+      out.set(p.x, p.y, p.z);
     }
   }
 
   private visible(landmarks: Landmark[], p: Point): boolean {
     if (p.kind === 'lm') return (landmarks[p.idx].visibility ?? 0) >= MIN_VISIBILITY;
-    return (
-      (landmarks[p.a].visibility ?? 0) >= MIN_VISIBILITY &&
-      (landmarks[p.b].visibility ?? 0) >= MIN_VISIBILITY
-    );
+    if (p.kind === 'mid') {
+      return (
+        (landmarks[p.a].visibility ?? 0) >= MIN_VISIBILITY &&
+        (landmarks[p.b].visibility ?? 0) >= MIN_VISIBILITY
+      );
+    }
+    return true;
   }
 
   // 2-DOF: rotate bone so its local +Y points along desiredDir, minimal
