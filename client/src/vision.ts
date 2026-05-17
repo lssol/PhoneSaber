@@ -13,6 +13,7 @@
 import { PoseLandmarker, FilesetResolver } from '@mediapipe/tasks-vision';
 
 export type Vec3 = { x: number; y: number; z: number };
+export type Landmark = { x: number; y: number; z: number; visibility?: number };
 
 export type BodyFrame = {
   leftShoulder: Vec3;
@@ -23,6 +24,11 @@ export type BodyFrame = {
   rightWristVisible: boolean;
   timeSec: number;
   processingMs: number;
+  // Full landmark arrays for downstream consumers (skeleton mapping, recording).
+  // `landmarks` is normalized image-space ([0..1] x/y, z is relative depth).
+  // `worldLandmarks` is metric, hip-centre origin.
+  landmarks: Landmark[];
+  worldLandmarks: Landmark[];
 };
 
 const LM = { LEFT_SHOULDER: 11, RIGHT_SHOULDER: 12, LEFT_WRIST: 15, RIGHT_WRIST: 16 } as const;
@@ -110,6 +116,8 @@ export async function startVision(
           rightWristVisible: (screen[LM.RIGHT_WRIST].visibility ?? 0) > MIN_VISIBILITY,
           timeSec: tsMs / 1000,
           processingMs,
+          landmarks: screen,
+          worldLandmarks: world,
         });
       }
     } catch (err) {

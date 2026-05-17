@@ -1,12 +1,21 @@
 import { Bloom, EffectComposer, ToneMapping } from '@react-three/postprocessing';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { ContactShadows, Environment, PerspectiveCamera, useGLTF } from '@react-three/drei';
+import { Environment, PerspectiveCamera, useGLTF } from '@react-three/drei';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as THREE from 'three';
+import * as SkeletonUtils from 'three/examples/jsm/utils/SkeletonUtils.js';
 import { createScene } from './scene';
 import { createSaberTrail, type SaberTrail } from './saberTrail';
 import { Fusion } from './fusion';
 import { createSaberModel, isBladeMaterial, SABER_URL } from './saberModel';
+import { ArmSolver } from './skeleton';
+import type { BodyFrame } from './vision';
+
+const JEDI_URL = '/jedi.glb';
+const JEDI_TARGET_HEIGHT_M = 1.8;
+// Where the Jedi stands in scene coordinates (feet on floor, slightly behind
+// the saber's resting position).
+const JEDI_FEET = new THREE.Vector3(0, 0, -0.4);
 
 export type FrameStats = {
   frames: number;
@@ -15,19 +24,22 @@ export type FrameStats = {
   frameMs: number;
 };
 
+export type BodyRef = { current: BodyFrame | null };
+
 type PhoneSaberAppProps = {
   fusion: Fusion;
   imuQuat: THREE.Quaternion;
   frameStats: FrameStats;
+  bodyRef: BodyRef;
+  video: HTMLVideoElement;
 };
 
 type ViewMode = 'cinematic' | 'debug';
 
-const scratchPosition = new THREE.Vector3();
 const cameraTarget = new THREE.Vector3();
 const cameraLookAt = new THREE.Vector3();
 
-export function PhoneSaberApp({ fusion, imuQuat, frameStats }: PhoneSaberAppProps) {
+export function PhoneSaberApp({ fusion, imuQuat, frameStats, bodyRef, video }: PhoneSaberAppProps) {
   const [mode, setMode] = useState<ViewMode>('cinematic');
 
   useEffect(() => {
@@ -41,9 +53,9 @@ export function PhoneSaberApp({ fusion, imuQuat, frameStats }: PhoneSaberAppProp
   return (
     <>
       {mode === 'debug' ? (
-        <DebugScene fusion={fusion} imuQuat={imuQuat} frameStats={frameStats} />
+        <DebugScene fusion={fusion} imuQuat={imuQuat} frameStats={frameStats} bodyRef={bodyRef} video={video} />
       ) : (
-        <CinematicScene fusion={fusion} imuQuat={imuQuat} frameStats={frameStats} />
+        <CinematicScene fusion={fusion} imuQuat={imuQuat} frameStats={frameStats} bodyRef={bodyRef} video={video} />
       )}
       <button
         id="mode-toggle"
@@ -57,7 +69,7 @@ export function PhoneSaberApp({ fusion, imuQuat, frameStats }: PhoneSaberAppProp
   );
 }
 
-function CinematicScene({ fusion, imuQuat, frameStats }: PhoneSaberAppProps) {
+function CinematicScene({ fusion, imuQuat, frameStats, bodyRef, video }: PhoneSaberAppProps) {
   return (
     <Canvas
       dpr={[1, 2]}
@@ -75,6 +87,7 @@ function CinematicScene({ fusion, imuQuat, frameStats }: PhoneSaberAppProps) {
       <CameraRig />
       <Room />
       <Lights />
+      <JediModel bodyRef={bodyRef} video={video} />
       <ControlledSaber fusion={fusion} imuQuat={imuQuat} position={[0, 1.15, 0]} />
       <EffectComposer multisampling={0}>
         <Bloom
@@ -131,6 +144,45 @@ function SceneClock({ frameStats }: { frameStats: FrameStats }) {
   return null;
 }
 
+// Phase 0 of motion matching: direct landmark-to-bone solver for upper
+// body (spine, shoulders, arms, head). Later phases replace this with
+// a recorded-pose lookup keyed on saber pose.
+function JediModel({ bodyRef }: { bodyRef: BodyRef; video: HTMLVideoElement }) {
+  const { scene } = useGLTF(JEDI_URL);
+  const clone = useMemo(() => SkeletonUtils.clone(scene), [scene]);
+
+  const { fitScale, footOffset } = useMemo(() => {
+    const box = new THREE.Box3().setFromObject(clone);
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    const fit = size.y > 0 ? JEDI_TARGET_HEIGHT_M / size.y : 1;
+    return { fitScale: fit, footOffset: -box.min.y * fit };
+  }, [clone]);
+
+  const solver = useMemo(() => new ArmSolver(clone), [clone]);
+  const lastTimeSecRef = useRef(-1);
+
+  useFrame(() => {
+    const frame = bodyRef.current;
+    if (!frame) return;
+    if (frame.timeSec === lastTimeSecRef.current) return;
+    lastTimeSecRef.current = frame.timeSec;
+    solver.apply(frame.worldLandmarks, frame.landmarks);
+  });
+
+  return (
+    <group
+      position={[JEDI_FEET.x, JEDI_FEET.y + footOffset, JEDI_FEET.z]}
+      scale={fitScale}
+    >
+      <primitive object={clone} />
+    </group>
+  );
+}
+
+// Renders the saber driven directly by fusion orientation + position. Once
+// motion matching is in, the saber's world transform will instead be derived
+// from the jedi's hand bones after the matched pose is applied.
 function ControlledSaber({
   fusion,
   imuQuat,
@@ -273,3 +325,4 @@ function updateFrameStats(frameStats: FrameStats, now: number) {
 }
 
 useGLTF.preload(SABER_URL);
+useGLTF.preload(JEDI_URL);

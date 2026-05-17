@@ -21,6 +21,7 @@ const root = document.getElementById('root')!;
 
 const imuQuat = new THREE.Quaternion(0, 0, 0, 1);
 let latestBody: BodyFrame | null = null;
+const bodyRef = { current: null as BodyFrame | null };
 
 const fusion = new Fusion(defaultCalibration());
 
@@ -69,6 +70,7 @@ window.addEventListener('keydown', (e) => {
 startVision(video, (frame) => {
   stats.vis++;
   latestBody = frame;
+  bodyRef.current = frame;
   fusion.updatePosition(frame);
   latency.lastVisionMs = performance.now();
   latency.mediapipeMs = frame.processingMs;
@@ -115,5 +117,11 @@ setInterval(() => {
 }, 250);
 
 createRoot(root).render(
-  <PhoneSaberApp fusion={fusion} imuQuat={imuQuat} frameStats={frameStats} />,
+  <PhoneSaberApp
+    fusion={fusion}
+    imuQuat={imuQuat}
+    frameStats={frameStats}
+    bodyRef={bodyRef}
+    video={video}
+  />,
 );
