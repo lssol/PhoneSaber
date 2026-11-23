@@ -1,37 +1,28 @@
-const WebSocket = require('ws');
+import express from 'express';
+import { startWebSocketServer } from './webSocket.js'
+import fs from 'fs'
+import https from 'https'
 
-const wss = new WebSocket.Server({ port: 8080, host: "0.0.0.0" });
+const app = express()
+const port = 3000
 
 
-const Counter = () => {
-  let currentCount = 0
-  let startTime = 0
-  let endTime = 0
+app.use('/', express.static('./client/src/'));
+app.use('/node_modules', express.static('./node_modules'));
+app.use('/res', express.static('./client/res'));
 
-  setInterval(() => {
-    endTime = new Date().getTime()
-    const ellapsed = endTime - startTime
-    const nbPerSec = 1000*currentCount / ellapsed
-    console.log("Speed: " + nbPerSec + " message/sec")
-    currentCount = 0
-    startTime = new Date().getTime()
-  }, 500)
+app.listen(port, () => {
+  console.log(`Example app listening on port ${port}`)
+})
 
-  return {
-    count: () => {
-      currentCount++
-    }
-  }
-}
+const options = {
+  key: fs.readFileSync('./server.key'),
+  cert: fs.readFileSync('./server.cert'),
+};
 
-const counter = Counter()
-let connections = []
-
-wss.on('connection', function connection(ws) {
-  connections.push(ws)
-  ws.on('message', function incoming(message) {
-    counter.count()
-    connections.filter(con => con != ws).forEach(con => con.send(message))
-  })
-});
-
+const phoneApp = express()
+const phonePort = 3001
+phoneApp.use('/', express.static('./phone/'));
+const server = https.createServer(options, phoneApp);
+startWebSocketServer()
+server.listen(phonePort)

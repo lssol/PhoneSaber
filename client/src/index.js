@@ -121,11 +121,12 @@ document.addEventListener("keydown", function(event) {
 
 
 ////// WebSocket
-const socket = new WebSocket('ws://localhost:8080');
+const socket = new WebSocket('wss://localhost:8080');
 socket.addEventListener('open', function (event) {
   console.log('Connection established')
 });
 socket.addEventListener('message', function (event) {
+  console.log(event.data)
   const values = event.data.split(',').map(v => parseFloat(v))
   if (values[0] == 15)
     updateRotation(values)
@@ -155,7 +156,7 @@ var cube = new THREE.Mesh( geometry, material );
 var loader = new THREE.GLTFLoader();
 var saber = null
 var box = null
-loader.load( '../res/l2/lightsaber.glb', function ( gltf ) {
+loader.load( './res/l2/lightsaber.glb', function ( gltf ) {
   const saberScene = gltf.scene
   saber = saberScene.children[1]
   scene.add( saber );
